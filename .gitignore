@@ -1,0 +1,47 @@
+# Python environments
+.venv/
+myvenv/
+myvenv
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Local build and coverage artifacts
+.coverage
+htmlcov/
+
+# LaTeX auxiliary files
+*.aux
+*.log
+*.toc
+*.out
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+
+# Generated figures and temporary outputs
+krogh_figures/
+Diagnostic reports/
+Example02.csv
+
+# Local backup snapshots
+backup_2026-04-16_phase2_baseline/
+backup_2026-04-16_phase3_baseline/
+backup_2026-04-16_phase4_baseline/
+backup_2026-04-16_phase5_baseline/
+backup_2026-04-16_phase6_baseline/
+backup_2026-04-16_phase7_baseline/
+backup_2026-04-16_phase8_baseline/
+backup_2026-04-16_phase9_baseline/
+backup_2026-04-16_phase10_baseline/
+backup_2026-04-16_pre_refactor/
+
+# Editor and OS files
+.vscode/
+.DS_Store

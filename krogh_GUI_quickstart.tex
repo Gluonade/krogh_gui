@@ -1,0 +1,109 @@
+\documentclass[12pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{geometry}
+\usepackage{amsmath}
+\geometry{margin=2.2cm}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.55em}
+\title{Krogh GUI\\Kurzanleitung fuer die praktische Nutzung}
+\author{Kurzreferenz}
+\date{18. April 2026}
+
+\begin{document}
+\sloppy
+\maketitle
+\tableofcontents
+
+\section{Zweck}
+Diese Kurzanleitung fasst die praktische Nutzung der Krogh-GUI in kompakter Form zusammen. Sie richtet sich an Anwender, die schnell arbeiten wollen, ohne jedes Mal die gesamte Langdokumentation zu lesen.
+
+\section{Aktueller Projektstand}
+Die Anwendung befindet sich jetzt in einem deutlich klareren, modularisierten Zustand als in den frueheren Ein-Datei-Versionen. Fuer die praktische Nutzung ist wichtig:
+\begin{itemize}
+  \item \texttt{app.py} ist der kleine Startpunkt fuer die Anwendung,
+  \item \texttt{krogh\_GUI.py} bleibt als Hauptfenster und Kompatibilitaetsschicht erhalten,
+  \item wiederverwendbare Logik wurde nach \texttt{krogh\_app/} ausgelagert,
+  \item Plotting, Sweep-Workflow, Diagnostik, Rekonstruktion, Speichern/Laden und Sprachlogik sind jetzt in getrennten Modulen organisiert.
+\end{itemize}
+
+Damit ist das Projekt fuer Anwender unveraendert bedienbar, aber fuer Wartung, Nachvollziehbarkeit und spaetere Erweiterungen deutlich besser strukturiert.
+
+\section{Programmstart}
+Die Anwendung wird ueber die Python-Datei gestartet. Nach dem Oeffnen stehen die Bereiche Eingaben, Serie, Numerik und Diagnostik zur Verfuegung. Vor dem ersten Lauf sollte geprueft werden, ob alle benoetigten Felder sinnvoll vorbelegt sind.
+
+\section{Einzelfall rechnen}
+Fuer einen Standardlauf werden folgende Felder gesetzt:
+\begin{itemize}
+  \item Eingangs-PO$_2$,
+  \item mitochondriales $P_{50}$,
+  \item pH,
+  \item pCO$_2$,
+  \item Temperatur,
+  \item Perfusionsfaktor.
+\end{itemize}
+Danach kann die Berechnung direkt gestartet werden. Wichtige Resultate sind der venoese Druck, das Gewebeminimum, das 5\%-Perzentil und die hypoxischen Flaechenanteile.
+
+\section{Serienanalyse}
+Fuer Sweep-Studien wird ein oder werden zwei Parameter ausgewaehlt und ueber einen Bereich variiert. Sinnvoll ist es, mit groberen Schritten zu beginnen und interessante Zonen spaeter feiner aufgeloest nachzurechnen. Bei auffaelligen Knicken oder Spruengen sollte man die Numerik etwas verschaerfen.
+
+\section{Numerik}
+Wenn Ergebnisse numerisch empfindlich wirken, helfen folgende Anpassungen:
+\begin{itemize}
+  \item kleinere ODE-Toleranzen,
+  \item kleinere maximale Schrittweite,
+  \item mehr Iterationen fuer die Gewebediffusion,
+  \item strengere Kopplungstoleranzen.
+\end{itemize}
+Fuer normale Alltagsfaelle reichen die Standardwerte meist aus.
+
+\section{Diagnostik}
+Im Diagnosebereich koennen Blutgaswerte und ein Sensor-PO$_2$ eingegeben werden. Die aktuelle Voreinstellung fuer den Sensorwert liegt nun bei 25 mmHg, weil dies den vorgesehenen diagnostischen Demonstrationsfall deutlich besser abbildet als die fruehere hohe Standardvorgabe.
+
+Das Modul gibt nicht mehr nur einen Risikoscore, eine Ampelfarbe und Wahrscheinlichkeiten fuer verschiedene Hypoxiezustaende zurueck. Die optimierte Fassung zeigt jetzt auch:
+\begin{itemize}
+  \item die wichtigsten Treiber des Alerts,
+  \item eine rekonstruierte Krogh-Erklaerung fuer die Messwerte,
+  \item den geschaetzten versteckten hypoxischen Gewebeanteil unter mehreren PO$_2$-Schwellen,
+  \item eine radiusabhaengige Bewertung fuer 30, 50 und 100~\textmu m.
+\end{itemize}
+
+Damit kann der Nutzer besser beurteilen, ob ein gelber oder oranger Alert robust ist oder vor allem unter einer groesseren bzw. geschwollenen Geometrieannahme entsteht und klinisch entsprechend eingeordnet werden sollte.
+
+\section{Interpretation}
+Eine gute Interpretation nutzt nie nur einen einzigen Wert. Besonders hilfreich ist die gemeinsame Betrachtung von:
+\begin{itemize}
+  \item $P_{venous}$,
+  \item $P_{tissue,P05}$,
+  \item Hypoxiefraktionen,
+  \item Sensorsignal-Mittelwert,
+  \item Verlauf im Sweep.
+\end{itemize}
+
+\section{Speichern und Dokumentieren}
+Empfohlen wird, interessante Faelle immer zusammen mit den Parametern und Plots zu speichern. So bleiben Ergebnisse spaeter reproduzierbar.
+
+Neu hinzugekommen sind mehrere direkte Exportwege:
+\begin{itemize}
+  \item Diagnoseberichte als JSON oder CSV,
+  \item englische Publikationsberichte als TXT, TEX oder PDF,
+  \item automatische Einbettung der letzten Rekonstruktionsabbildung in den Publikationsbericht.
+\end{itemize}
+
+Die Berichte enthalten jetzt zusaetzlich klinische Interpretation, Modellbefunde, Vorsichtshinweise, Follow-up-Empfehlungen sowie den Hinweis, unter welcher Radiusannahme ein bestimmter Alert besonders relevant ist.
+
+\section{Architektur im Alltag verstehen}
+Fuer den taeglichen Gebrauch muss nicht jedes interne Modul bekannt sein. Dennoch ist der aktuelle Aufbau nuetzlich zu verstehen:
+\begin{itemize}
+  \item Die wissenschaftlichen Kernfunktionen fuer den Krogh-Zylinder sind weiterhin direkt nachvollziehbar.
+  \item Sweeps und Serienplots werden ueber eigene Service-Module ausgefuehrt.
+  \item Die Diagnostik ist von der reinen GUI-Logik getrennt und dadurch leichter validierbar.
+  \item Hilfe-, Export- und Sprachfunktionen sind zentralisiert und dadurch konsistenter geworden.
+\end{itemize}
+
+Dieser Zustand ist besonders guenstig fuer Forschungsarbeit, da Bedienoberflaeche und Rechenkern enger dokumentiert, aber intern sauberer getrennt sind.
+
+\section{Kurzfazit}
+Die Krogh-GUI ist fuer schnelle Einzelfaelle, systematische Sweeps und diagnostische Rekonstruktionen geeignet. Fuer tieferes Verstaendnis sollte bei Bedarf die ausfuehrliche Hauptdokumentation herangezogen werden.
+
+\end{document}

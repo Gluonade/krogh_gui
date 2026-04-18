@@ -1,0 +1,226 @@
+\documentclass[12pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{geometry}
+\usepackage{amsmath,amssymb,array}
+\geometry{margin=2.2cm}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.5em}
+\title{oxygenation\_diagnostic\_mvp\\Detailed English Documentation of the Diagnostic and Fitting Logic}
+\author{Technical reconstruction from the current module}
+\date{18 April 2026}
+
+\begin{document}
+\sloppy
+\maketitle
+\tableofcontents
+\newpage
+
+\section{Purpose of the module}
+The module \texttt{oxygenation\_diagnostic\_mvp.py} provides the diagnostic layer for the Krogh GUI. Its role is to map a compact set of clinically interpretable inputs onto a probabilistic assessment of tissue oxygenation risk. The implementation is intentionally lightweight and transparent: it uses explicit mathematical transforms and deterministic heuristics rather than opaque training pipelines.
+
+For scientific use, this transparency is a major advantage. Every intermediate quantity can be traced, and the diagnostic result can be related directly to the numerical reconstruction in the main Krogh model.
+
+\section{Current integration state inside the refactored project}
+In the current April 2026 project state, the diagnostic MVP is no longer just an isolated helper script. It is embedded into a broader, partially modularized application architecture. The surrounding GUI now delegates most non-trivial diagnostic workflow steps to dedicated service modules inside \texttt{krogh\_app}.
+
+Concretely, the present integration has the following structure:
+\begin{itemize}
+    \item the raw diagnostic logic still lives in \texttt{oxygenation\_diagnostic\_mvp.py},
+    \item the GUI accesses it through \texttt{krogh\_app.diagnostics}, which provides a stable wrapper layer,
+    \item inverse fitting and reconstruction of a plausible Krogh cylinder are handled in \texttt{krogh\_app.reconstruction},
+    \item plotting of the reconstructed fields is coordinated through the shared plotting helpers,
+    \item the Tkinter shell mainly collects inputs, triggers the workflow, and displays the resulting probabilities and fitted fields.
+\end{itemize}
+
+This means the diagnostic module is now part of a clearer end-to-end pipeline: user input $\rightarrow$ diagnostic risk evaluation $\rightarrow$ mechanistic reconstruction $\rightarrow$ graphical interpretation. From a documentation perspective, this is the most important change in the actual project state, because it makes the diagnostic logic easier to audit separately from the rest of the interface code.
+
+\section{Key recent diagnostic improvements}
+The diagnostic area of the project was extended substantially during the latest verified work cycle. The most relevant improvements are:
+\begin{itemize}
+    \item the diagnostic result now reports the dominant alert-score drivers in plain language,
+    \item the reconstruction layer now explains which hidden assumptions were required to match the measured pattern,
+    \item hidden hypoxic burden is quantified below clinically relevant thresholds rather than being reduced to one average value,
+    \item radius-conditioned alert summaries are now given for 30, 50, and 100~\textmu m tissue assumptions,
+    \item clinically oriented report text explicitly states when a stronger alert is mainly supported only if the larger or swollen-tissue geometry is clinically plausible,
+    \item the GUI default example for tissue sensor PO$_2$ was corrected to 25 mmHg, which better matches the intended diagnostic use case.
+\end{itemize}
+
+These additions do not change the lightweight nature of the MVP classifier itself; rather, they make its interpretation substantially more transparent and scientifically honest.
+
+\section{Inputs and data model}
+The primary input container is the frozen data class
+\texttt{OxygenationInput(po2, pco2, pH, temperature\_c, sensor\_po2, hemoglobin\_g\_dl=13.5, venous\_sat\_percent=75.0)}.
+
+Thus the diagnostic module expects:
+\begin{itemize}
+    \item arterial or blood-gas PO$_2$,
+    \item blood-gas pCO$_2$,
+    \item pH,
+    \item temperature,
+    \item local sensor PO$_2$,
+    \item optionally hemoglobin concentration,
+    \item optionally venous saturation.
+\end{itemize}
+
+All inputs are converted to floating-point values inside \texttt{alert\_decision(...)} before any further calculations are performed.
+
+\section{Core helper functions}
+\subsection{Value clamping}
+The helper \texttt{\_clamp(value, lower=0.0, upper=1.0)} ensures that probabilities and risk-like quantities remain in a physically meaningful interval. This function is called repeatedly throughout the module and plays an important defensive role.
+
+\subsection{Sigmoid transform}
+The function \texttt{\_sigmoid(x)} computes
+\[
+\sigma(x) = \frac{1}{1+e^{-x}},
+\]
+after clipping the input to the interval $[-60, 60]$. This prevents numerical overflow in \texttt{math.exp}. Every sub-risk in the model is ultimately generated by a shifted and rescaled sigmoid.
+
+\subsection{Softmax normalization}
+The helper \texttt{\_softmax(score\_map)} converts class scores into probabilities:
+\[
+p_i = \frac{e^{s_i}}{\sum_j e^{s_j}}.
+\]
+The implementation subtracts the maximum score before exponentiation, which is a standard stability trick.
+
+\section{Physiological correction of the oxygen dissociation curve}
+The diagnostic module shares the same effective half-saturation calculation as the mechanistic GUI model:
+\[
+P_{50,eff} = P_{50,std} \cdot 10^{\beta_{pH}(pH-PH_{ref}) + \beta_{CO_2}\log_{10}(pCO_2/PCO2_{ref}) + \beta_T(T-T_{ref})}.
+\]
+
+This is implemented by \texttt{effective\_p50(pH, pco2, temperature\_c)}. The function uses the constants
+\texttt{P50\_STD = 26.8}, \texttt{N\_HILL = 2.7}, \texttt{BOHR\_COEFF = -0.48}, \texttt{CO2\_COEFF = 0.06}, and \texttt{TEMP\_COEFF = 0.024}. In other words, the diagnostic layer is not disconnected from the transport theory; it preserves the same biochemical directionality.
+
+\section{Hemoglobin saturation estimate}
+The function \texttt{hill\_saturation(po2, p50\_eff=None)} evaluates
+\[
+S(P) = \frac{P^{n}}{P^{n} + P_{50,eff}^{n}}
+\]
+and returns a saturation fraction in the interval $[0,1]$. Inside \texttt{alert\_decision}, this is used to compute
+\[
+S_a = 100 \times S(PO_2),
+\]
+which becomes the field \texttt{estimated\_sa\_percent} in the returned result dictionary.
+
+\section{Construction of the risk score}
+\subsection{Feature-level sub-risks}
+The function \texttt{alert\_decision} generates one sigmoid-based risk component for each physiological feature:
+\begin{align*}
+R_{PO_2} &= \sigma\!\left(\frac{55 - PO_2}{12}\right), \\
+R_{sensor} &= \sigma\!\left(\frac{45 - PO_{2,sensor}}{10}\right), \\
+R_{acid} &= \sigma\!\left(\frac{7.32 - pH}{0.06}\right), \\
+R_{CO_2} &= \sigma\!\left(\frac{pCO_2 - 48}{8}\right), \\
+R_{Hb} &= \sigma\!\left(\frac{11.5 - Hb}{1.5}\right), \\
+R_{venous} &= \sigma\!\left(\frac{68 - SvO_2}{7}\right).
+\end{align*}
+
+Temperature risk is defined as the maximum of a low-temperature and high-temperature sigmoid, and the oxygen gap risk is derived from the difference between blood-gas PO$_2$ and sensor PO$_2$.
+
+\subsection{Weighted combination}
+The current risk score is the weighted sum
+\begin{align*}
+R &= 0.22R_{PO_2} + 0.28R_{sensor} + 0.12R_{gap} + 0.12R_{acid} \\
+  &\quad + 0.10R_{CO_2} + 0.08R_{Hb} + 0.06R_{venous} + 0.02R_T.
+\end{align*}
+
+The result is clamped to $[0,1]$. Two hard clinical overrides are then applied:
+\begin{itemize}
+    \item if \texttt{sensor\_po2 < 15} or \texttt{po2 < 25}, the score is forced to at least 0.90,
+    \item if \texttt{sensor\_po2 < 25} or \texttt{po2 < 35}, the score is forced to at least 0.72.
+\end{itemize}
+
+These overrides are important for interpretation. They express an explicit modeling choice: sufficiently low oxygen values should never be down-classified by the averaging effect of the weighted sum.
+
+\section{From a scalar score to class probabilities}
+The helper \texttt{\_state\_probabilities(risk\_score, compensation\_gap, sensor\_po2, po2)} maps the continuous risk into five diagnostic states:
+\begin{enumerate}
+    \item normoxia,
+    \item mild hypoxia,
+    \item compensated hypoxia,
+    \item severe hypoxia,
+    \item profound hypoxia.
+\end{enumerate}
+
+The code defines Gaussian-like score centers at 0.08, 0.28, 0.50, 0.75, and 0.94 with state-specific widths. It then adds physiologically motivated modifiers:
+\begin{itemize}
+    \item compensated hypoxia receives a positive increment proportional to the compensation gap,
+    \item normoxia is rewarded when the compensation gap is small,
+    \item severe hypoxia is boosted when the sensor value drops below 35 mmHg,
+    \item profound hypoxia receives a strong extra boost for very low sensor or blood-gas values.
+\end{itemize}
+
+Finally, \texttt{\_softmax} converts these scores into normalized probabilities.
+
+\section{Alert decision logic}
+The returned alert color is determined by three user-configurable thresholds:
+\begin{itemize}
+    \item green if the score is below the yellow threshold,
+    \item yellow if it is between yellow and orange,
+    \item orange if it is between orange and red,
+    \item red if it is above the red threshold.
+\end{itemize}
+
+Before evaluation, the function explicitly checks that
+\[
+0 \leq y \leq o \leq r \leq 1.
+\]
+If this ordering is violated, a \texttt{ValueError} is raised.
+
+\section{Returned result structure}
+The dictionary returned by \texttt{alert\_decision(...)} contains at least the following fields:
+\begin{itemize}
+    \item \texttt{predicted\_state},
+    \item \texttt{risk\_score},
+    \item \texttt{alert\_level},
+    \item \texttt{confidence},
+    \item \texttt{certainty},
+    \item the five class probabilities \texttt{p\_normoxia}, \texttt{p\_mild\_hypoxia}, \texttt{p\_compensated\_hypoxia}, \texttt{p\_severe\_hypoxia}, and \texttt{p\_profound\_hypoxia},
+    \item \texttt{estimated\_sa\_percent},
+    \item \texttt{p50\_eff},
+    \item a nested dictionary of feature risks,
+    \item \texttt{dominant\_risk\_drivers} and the human-readable \texttt{driver\_summary},
+    \item the normalized input record.
+\end{itemize}
+
+The most probable class determines the label \texttt{predicted\_state}. Confidence is the maximum class probability, and certainty is defined as the gap between the best and second-best class probability. This is a simple but interpretable uncertainty surrogate.
+
+\section{Connection to the inverse Krogh reconstruction}
+The diagnostic module itself does not perform mechanistic fitting. However, its outputs and its raw inputs are consumed directly by the GUI reconstruction workflow in \texttt{krogh\_GUI.py}. This connection is scientifically crucial.
+
+The reconstruction pipeline first computes an effective venous target PO$_2$ from the entered saturation, then searches for the perfusion factor and mitochondrial half-saturation parameter that best reproduce both the sensor reading and the venous target. Therefore, the diagnostic output should always be interpreted together with the reconstruction summary if the goal is to understand how the reported state emerged.
+
+In the present project version, this combined interpretation is surfaced directly to the user. The publication report and the diagnostic text now explain not only the alert color, but also why the alert arose, what hidden tissue burden is implied by the fitted solution, and whether the conclusion is stable across different radius assumptions.
+
+\section{Numerical methods used during fitting}
+Although the risk classification itself is algebraic, the downstream reconstruction uses explicit numerical procedures:
+\begin{enumerate}
+    \item inversion of the Hill law to obtain a venous PO$_2$ target,
+    \item a coarse but transparent geometric grid search over perfusion and \texttt{P\_half},
+    \item repeated calls to the full Krogh solver for each candidate,
+    \item objective minimization based on sensor error, venous error, and logarithmic regularization,
+    \item optional one-dimensional root finding with \texttt{scipy.optimize.brentq} in the auxiliary fitting routine.
+\end{enumerate}
+
+This is important for auditability: the reconstruction does not hide its assumptions in an optimizer with many invisible degrees of freedom. Instead, it evaluates a clearly delimited candidate set and scores each candidate explicitly.
+
+\section{Assumptions behind a good fit}
+A diagnostically useful fit in the current software typically relies on the following assumptions:
+\begin{enumerate}
+    \item the blood-gas PO$_2$ is a reasonable proxy for inlet capillary oxygenation,
+    \item the sensor PO$_2$ reflects a weighted mean of the simulated tissue field,
+    \item default venous saturation values are only weak hints, whereas user-entered venous saturation values deserve stronger weighting,
+    \item physiologically extreme parameter values should be penalized unless the data strongly require them,
+    \item the fitting grid itself limits the search space, so the best solution is the best solution within the specified domain, not an unrestricted global optimum,
+    \item the effective tissue-cylinder radius is not known uniquely in advance and should therefore be read as a conditional assumption; the current GUI now makes this explicit by comparing 30, 50, and 100~\textmu m variants.
+\end{enumerate}
+
+These points should be stated explicitly in any methods section or appendix accompanying published results.
+
+\section{Strengths and limitations}
+The main strength of the module is interpretability. Every decision can be tied to a named feature risk, a fixed weight, and a transparent threshold. Its main limitation is that the weights are expert-designed rather than learned from a large outcome-labelled cohort. In this sense, the module is best understood as a highly readable model-based diagnostic MVP rather than a fully validated clinical classifier.
+
+\section{Conclusion}
+The module \texttt{oxygenation\_diagnostic\_mvp.py} translates raw blood-gas and sensor measurements into a structured risk assessment whose internal logic is fully inspectable. Because the diagnostic output is tightly coupled to the inverse Krogh reconstruction, the module is not merely a convenience layer; it is a central interpretive component of the full application. Its value lies precisely in the fact that the mathematical steps, numerical safeguards, parameter assumptions, and result fields can all be reviewed in detail.
+
+\end{document}

@@ -1,0 +1,402 @@
+\documentclass[12pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{geometry}
+\usepackage{amsmath,amssymb,array,tabularx,url}
+\geometry{margin=2.0cm}
+\linespread{1.08}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.55em}
+\title{Krogh GUI\\Publication-Level Mathematical, Numerical, and Implementation Documentation}
+\author{Technical reconstruction from the current source code}
+\date{18 April 2026}
+
+\begin{document}
+\sloppy
+\maketitle
+\tableofcontents
+\newpage
+
+\section{Abstract}
+This document provides an English, publication-oriented description of the application implemented in \texttt{krogh\_GUI.py}. Its goal is not merely to summarize the user interface, but to establish a traceable chain from physiological theory to mathematical equations, from equations to numerical algorithms, and from numerical algorithms to the exact Python functions that produce the reported outputs.
+
+Special emphasis is placed on transparency. The document explains which library routines are called, at what stage of the computation they are used, what their most important parameters are, and which quantities they return. This is particularly important for the diagnostic and reconstruction workflow, where model-based fitting must remain auditable if a reviewer later asks why a certain result was obtained.
+
+\section{Current project state after the April 2026 refactor}
+The software is no longer just one monolithic Tkinter script. In the current verified state, the project follows a hybrid architecture: the validated numerical core remains directly readable, while orchestration, plotting, persistence, diagnostics, localization, and UI helpers have been extracted into a dedicated package called \texttt{krogh\_app}.
+
+The user-facing entry point is now \texttt{app.py}. This file is intentionally small and only launches the main window. The file \texttt{krogh\_GUI.py} still exists, but now acts primarily as a compatibility-oriented coordination layer so that established workflows remain intact while the internals become easier to maintain.
+
+\subsection{What has already been separated into modules}
+At the present phase of development, the following responsibilities live outside the legacy GUI shell:
+\begin{itemize}
+    \item \texttt{krogh\_app.constants}: physical constants, discretization defaults, and numeric configuration ranges,
+    \item \texttt{krogh\_app.types}: structured dataclasses for simulation inputs and diagnostic runs,
+    \item \texttt{krogh\_app.diagnostics}: the diagnostic engine wrapper for the oxygenation MVP logic,
+    \item \texttt{krogh\_app.reconstruction}: inverse fitting and preparation of reconstruction plot data,
+    \item \texttt{krogh\_app.series}: one-dimensional and two-dimensional sweep execution plus numeric sensitivity checks,
+    \item \texttt{krogh\_app.plotting}: reusable plot styling and workflow coordinators for line plots, heatmaps, and 3D surfaces,
+    \item \texttt{krogh\_app.persistence}: capture and restoration of GUI state as well as run export support,
+    \item \texttt{krogh\_app.helptext}: generation of explanatory output and numerics help text,
+    \item \texttt{krogh\_app.localization}: centralized translation, label formatting, and multilingual text handling,
+    \item \texttt{krogh\_app.ui.*}: focused coordinators for layout, runtime updates, execution control, figure display, dialogs, and tooltips.
+\end{itemize}
+
+\subsection{What still remains in the main GUI file}
+The current \texttt{krogh\_GUI.py} still contains the validated mechanistic solver functions, the translation dictionaries, and the top-level \texttt{KroghGUI} class. This is intentional. The refactor has been performed incrementally in order to preserve the mathematically validated behaviour while reducing structural complexity step by step rather than rewriting the application all at once.
+
+\subsection{Practical consequence for users and reviewers}
+For everyday use, the graphical workflow is intentionally almost unchanged. For maintenance and scientific auditability, however, the project is now much clearer: individual responsibilities can be inspected in small modules, numerical behaviour can be checked independently of the UI, and future work can extend isolated services without destabilizing the whole program.
+
+\subsection{Snapshot of the actual architecture}
+\begin{center}
+\renewcommand{\arraystretch}{1.12}
+\small
+\begin{tabularx}{0.98\textwidth}{|>{\raggedright\arraybackslash}p{0.28\textwidth}|>{\raggedright\arraybackslash}X|}
+\hline
+Current file or package area & Current role in the software \\
+\hline
+\path{app.py} & Minimal startup entry point that launches the GUI. \\
+\hline
+\path{krogh_GUI.py} & Compatibility host and central controller; still contains the scientific core functions and the main Tkinter window class. \\
+\hline
+\path{krogh_app/plotting.py} & Shared figure styles plus the coordinators for series plots and 3D rendering. \\
+\hline
+\path{krogh_app/series.py} & Parameter sweep generation, execution, and numerics comparison logic. \\
+\hline
+\path{krogh_app/reconstruction.py} & Joint fitting from diagnostic values back to plausible Krogh parameters. \\
+\hline
+\path{krogh_app/diagnostics.py} & Stable wrapper around the probabilistic oxygenation diagnostic logic. \\
+\hline
+\path{krogh_app/persistence.py} & Save/load of cases and export-related state handling. \\
+\hline
+\path{krogh_app/localization.py} & TranslationManager for multilingual labels, state names, and result text. \\
+\hline
+\path{krogh_app/ui/} & Small single-responsibility UI helpers for layout, runtime state, dialogs, execution, and figures. \\
+\hline
+\end{tabularx}
+\normalsize
+\end{center}
+
+In summary, the project is currently in a productive transitional state: scientifically operational, clinically interpretable, and already substantially modularized, while still preserving the legacy entry points needed for continuity.
+
+\subsection{Key verified improvements from the latest development cycle}
+The documentation should explicitly reflect that the project was not only reorganized structurally, but also strengthened scientifically and clinically during the most recent development cycle. The key verified additions are:
+\begin{itemize}
+    \item the inverse reconstruction now reports a practical near-optimal uncertainty band for mitoP50 and perfusion instead of only a single best-fit point,
+    \item diagnostic and reconstruction results can now be exported directly as structured JSON/CSV reports,
+    \item the GUI can generate an English publication report as plain text, LaTeX, or PDF, and the latest reconstruction figure is embedded automatically when available,
+    \item the publication report now contains explicit narrative sections for probabilistic result, clinical interpretation, model-based findings, cautions and limitations, and suggested follow-up,
+    \item the diagnostic output identifies the dominant alert-score drivers so that the color category is not a black-box label,
+    \item the reconstruction quantifies hidden hypoxic burden below 1, 5, 10, 15, and 20 mmHg instead of relying only on a mean tissue value,
+    \item geometric uncertainty is now addressed more transparently by comparing radius assumptions of 30, 50, and 100~\textmu m, and the diagnostic tab can evaluate either all variants or one user-selected radius,
+    \item the report wording now states explicitly when an elevated alert is supported chiefly under the larger or swollen-tissue geometry, which makes the clinical relevance easier to judge.
+\end{itemize}
+
+\section{Scientific scope of the application}
+The software combines four layers in a single environment:
+\begin{enumerate}
+    \item simulation of a single Krogh-cylinder oxygenation case,
+    \item one-dimensional and two-dimensional parameter sweeps,
+    \item user-adjustable numerical solver control,
+    \item probabilistic diagnostics and inverse reconstruction from measurement-like inputs.
+\end{enumerate}
+
+In scientific terms, the program is a mechanistic microcirculatory oxygen transport model with an attached diagnostic interpretation layer. In engineering terms, it is a transparent computational workflow in which the physiological assumptions are explicit and the numerical path to the final outputs can be inspected.
+
+\section{Mathematical formulation}
+\subsection{Krogh cylinder geometry}
+The model idealizes one capillary as the axis of a tissue cylinder. The capillary radius is denoted by $R_{cap}$ and the tissue radius by $R_{tis}$. Oxygen is transported axially in blood and diffuses radially into tissue, where it is consumed by metabolism.
+
+The central unknowns are the capillary oxygen partial pressure $P_c(z)$ and the tissue oxygen field $P(z,r)$.
+
+\subsection{Bohr effect, carbon dioxide effect, and temperature shift}
+The code first transforms the standard hemoglobin half-saturation pressure $P_{50}$ into an effective value:
+\[
+P_{50,eff} = P_{50} \cdot 10^{\beta_{pH}(pH-PH_{ref}) + \beta_{CO_2}\log_{10}(pCO_2/PCO2_{ref}) + \beta_T(T-T_{ref})}.
+\]
+
+This relation is implemented by the function \texttt{effective\_p50(pH, pco2, temp\_c)}. Numerically, the code protects the logarithm by replacing very small carbon dioxide values with \texttt{max(pco2, 1e-6)}. This simple safeguard prevents undefined values during diagnostic or extreme-case runs.
+
+\subsection{Hemoglobin saturation}
+The oxygen saturation curve follows the Hill relation
+\[
+S(P) = \frac{P^{n}}{P^{n} + P_{50,eff}^{n}},
+\]
+with Hill exponent $n=2.7$ in the current code base. The function \texttt{hill\_saturation(P, p50\_eff=None)} computes this quantity for scalar or array input. The implementation applies \texttt{np.maximum(P, 1e-9)} so that the power law remains numerically stable even close to zero oxygen tension.
+
+\subsection{Differential oxygen capacity}
+The capillary pressure equation requires the derivative of oxygen content with respect to oxygen partial pressure:
+\[
+\frac{dC}{dP} = C_{Hb}\frac{dS}{dP} + \alpha.
+\]
+
+This term is computed in \texttt{dC\_dP(P, p50\_eff=None)}. It is a key nonlinearity: the same oxygen extraction rate causes different pressure drops depending on whether the local point lies in a steep or flat segment of the saturation curve.
+
+\subsection{Radial Krogh-Erlang solution}
+For a fixed axial position and an effective metabolic demand $M$, the code uses the classical Krogh-Erlang expression
+\[
+P(r) = P_c + \frac{M}{4K}(r^2-R_c^2) - \frac{M R_t^2}{2K}\ln\!\left(\frac{r}{R_c}\right).
+\]
+
+This is implemented in \texttt{krogh\_erlang(r, P\_c, M, K, R\_c, R\_t)} and serves both as a direct estimate and as an initialization profile for the coupled two-dimensional solve.
+
+\subsection{Michaelis-Menten-like oxygen consumption}
+Tissue consumption is not constant. Instead, the code uses
+\[
+M(P) = M_{max}\left[f_{min} + (1-f_{min})\frac{P}{P+P_{half}}\right].
+\]
+
+The function \texttt{michaelis\_menten\_consumption(P\_local, P\_half, M\_max=M\_rate)} implements this expression. The parameter $P_{half}$ controls how strongly metabolism becomes oxygen-limited. The constant \texttt{MIN\_CONSUMPTION\_FRACTION} ensures that consumption does not collapse to an artificial zero at extremely low oxygen values.
+
+\section{From mathematical theory to Python functions}
+The following table is the core translation layer between the theory and the implementation.
+
+\begin{center}
+\renewcommand{\arraystretch}{1.12}
+\setlength{\tabcolsep}{4pt}
+\scriptsize
+\begin{tabular}{|>{\raggedright\arraybackslash}p{0.17\textwidth}|>{\raggedright\arraybackslash}p{0.27\textwidth}|>{\raggedright\arraybackslash}p{0.18\textwidth}|>{\raggedright\arraybackslash}p{0.20\textwidth}|}
+\hline
+Mathematical object & Python function & Main inputs & Returned quantity \\
+\hline
+Bohr/CO$_2$/temp. correction & \texttt{effective\_p50} & \texttt{pH}, \texttt{pco2}, \texttt{temp\_c} & Effective $P_{50}$ (mmHg) \\
+\hline
+Hill saturation & \texttt{hill\_saturation} & \texttt{P}, optional \texttt{p50\_eff} & Saturation in $[0,1]$ \\
+\hline
+Content derivative & \texttt{dC\_dP} & \texttt{P}, optional \texttt{p50\_eff} & Capacity term for the ODE \\
+\hline
+Radial analytic profile & \texttt{krogh\_erlang} & Radius vector, capillary boundary, demand, diffusion coefficient & Radial tissue PO$_2$ profile \\
+\hline
+Nonlinear metabolic law & \texttt{michaelis\_menten\_}\allowbreak\texttt{consumption} & Local PO$_2$, \texttt{P\_half} & Consumption field or scalar \\
+\hline
+Self-consistent mean demand & \texttt{effective\_consumption\_from\_}\allowbreak\texttt{capillary\_po2} & Capillary PO$_2$, \texttt{P\_half} & Effective axial demand \\
+\hline
+Capillary ODE solver & \texttt{solve\_capillary\_profile} & ODE right-hand side and inlet PO$_2$ & Axial capillary profile \\
+\hline
+Two-dimensional diffusion solve & \texttt{solve\_tissue\_field\_with\_}\allowbreak\texttt{axial\_diffusion} & Capillary profile, \texttt{P\_half}, optional initial guess & Tissue field over $(z,r)$ \\
+\hline
+Coupled tissue-capillary solve & \texttt{solve\_axial\_capillary\_po2} & Inlet PO$_2$, \texttt{P\_half}, \texttt{p50\_eff}, diffusion flag, perfusion factor & Capillary profile, tissue field, mean demand \\
+\hline
+User-facing model run & \texttt{run\_single\_case} & Physiological and threshold inputs & Final metrics dictionary \\
+\hline
+\end{tabular}
+\normalsize
+\setlength{\tabcolsep}{6pt}
+\end{center}
+
+\section{Exact numerical workflow in the code}
+\subsection{Grid generation}
+At import time, the code builds the numerical mesh using NumPy:
+\begin{itemize}
+    \item \texttt{z\_eval = np.linspace(0, L\_cap, NZ)} for the axial positions,
+    \item \texttt{r\_vec = np.linspace(R\_cap, R\_tis, NR)} for the radial positions,
+    \item \texttt{dr} and \texttt{dz} from the mesh spacing,
+    \item \texttt{radial\_weights = r\_vec / np.sum(r\_vec * dr)} for weighted averaging.
+\end{itemize}
+
+This weighting is important: the model does not treat each radial node as equally representative, but approximately respects the cylindrical area element.
+
+\subsection{Step 1: self-consistent consumption for a given capillary PO$_2$}
+The function \texttt{effective\_consumption\_from\_capillary\_po2(P\_c, P\_half, max\_iter=30, tol=1e-7)} performs a fixed-point iteration:
+\begin{enumerate}
+    \item start from \texttt{M\_eff = M\_rate},
+    \item compute a radial profile by calling \texttt{krogh\_erlang},
+    \item clip negative values through \texttt{np.maximum(profile, 0.0)},
+    \item compute the weighted mean by \texttt{np.average(profile, weights=radial\_weights)},
+    \item evaluate a new metabolic demand via \texttt{michaelis\_menten\_consumption},
+    \item stop when the absolute change drops below \texttt{tol}.
+\end{enumerate}
+
+This is not a black box optimization. It is an explicit, auditable fixed-point update.
+
+\subsection{Step 2: axial capillary transport ODE}
+The capillary transport equation is solved as
+\[
+\frac{dP_c}{dz} = -\frac{M_{eff}(z)\pi R_{tis}^2}{Q_{local} \, dC/dP}.
+\]
+
+The corresponding Python routine is \texttt{solve\_capillary\_profile(dPc\_dz, P\_inlet)}. Internally it calls:
+\begin{center}
+\footnotesize
+\begin{tabular}{@{}l@{}}
+\texttt{solve\_ivp(dPc\_dz, (0, L\_cap), [P\_inlet], t\_eval=z\_eval,} \\
+\texttt{method="RK45", rtol=CAPILLARY\_ODE\_RTOL, atol=CAPILLARY\_ODE\_ATOL,} \\
+\texttt{max\_step=CAPILLARY\_ODE\_MAX\_STEP)}
+\end{tabular}
+\normalsize
+\end{center}
+
+Thus the main imported SciPy routine is \texttt{scipy.integrate.solve\_ivp}, used with the adaptive explicit Runge-Kutta method \texttt{RK45}. The default tolerances in the code are tight \texttt{(rtol = 1e-9, atol = 1e-11)}, and the maximum step is tied to the axial mesh width.
+
+\subsection{Step 3: axial-radial tissue field with finite differences}
+If axial diffusion is activated, the program enters the following function:
+\begin{center}
+\footnotesize
+\texttt{solve\_tissue\_field\_with\_axial\_diffusion(P\_c\_axial, P\_half, initial\_guess=None)}
+\normalsize
+\end{center}
+Here the tissue field is discretized by finite differences. The update coefficients
+\[
+a_{+}, \; a_{-}, \; a_z, \; \text{and} \; \text{denom}
+\]
+are derived from the diffusion coefficient \texttt{K\_diff} and the mesh widths \texttt{dr} and \texttt{dz}.
+
+At every inner iteration the code computes the local consumption field from the previous iterate,
+then updates the interior nodes,
+then applies under-relaxation with factor \texttt{AXIAL\_DIFFUSION\_RELAX = 0.45}.
+The iteration terminates when
+\[
+\max |P^{new} - P^{old}| < \texttt{AXIAL\_DIFFUSION\_TOL}.
+\]
+
+\subsection{Step 4: outer capillary-tissue coupling}
+The function \texttt{solve\_axial\_capillary\_po2(...)} wraps the entire coupled calculation. If axial diffusion is enabled, the algorithm alternates between:
+\begin{enumerate}
+    \item updating the tissue field,
+    \item computing the slice-wise average demand by \texttt{np.average(..., axis=1, weights=radial\_weights)},
+    \item interpolating the new demand along the capillary with \texttt{np.interp(z\_pos, z\_eval, M\_slice)},
+    \item solving the capillary ODE again.
+\end{enumerate}
+
+The outer loop stops when the maximum absolute difference between two consecutive capillary profiles is below \texttt{AXIAL\_COUPLING\_TOL}. This splitting strategy is computationally transparent and is easier to diagnose than a monolithic nonlinear solver.
+
+\section{How outputs are generated from the solved fields}
+The single-case entry point is
+\texttt{run\_single\_case(P\_inlet, P\_half, pH, pCO2, temp\_c, perfusion\_factor, include\_axial\_diffusion, ...)}.
+Its output is a metrics dictionary whose contents are derived as follows:
+\begin{itemize}
+    \item \texttt{P\_venous}: final element of the capillary profile, i.e. \texttt{float(P\_c\_axial[-1])},
+    \item \texttt{P\_tissue\_min}: global minimum of the tissue field,
+    \item \texttt{P\_tissue\_p05}: 5th percentile computed by \texttt{np.percentile(tissue\_values, 5.0)},
+    \item hypoxic fractions: percentages below 1, 5, or 10 mmHg computed by \texttt{np.mean(tissue\_values < threshold)},
+    \item high-oxygen fractions: percentages above absolute or relative thresholds,
+    \item \texttt{PO2\_sensor\_avg}: axial mean of the weighted radial average,
+    \item \texttt{S\_a} and \texttt{S\_v}: arterial and venous saturation obtained from \texttt{hill\_saturation}.
+\end{itemize}
+
+Therefore, every user-visible number is directly linked to a compact NumPy operation or to a named model function. This is precisely the kind of traceability required for publication-quality reporting.
+
+\section{Important numerical assumptions and their implications}
+\subsection{Why the model fits robustly in many cases}
+The program uses several stabilizing choices:
+\begin{enumerate}
+    \item clipping negative PO$_2$ values to zero,
+    \item enforcing a strictly positive perfusion denominator via \texttt{max(perfusion\_factor * Q\_flow, 1e-12)},
+    \item protecting logarithms and power laws from singular input,
+    \item starting the coupled problem from analytic Krogh profiles,
+    \item exposing tolerances and iteration limits in the GUI rather than hiding them.
+\end{enumerate}
+
+These design choices do not guarantee perfect identifiability, but they do strongly improve reproducibility and numerical readability.
+
+\subsection{When stricter settings are scientifically advisable}
+Tighter tolerances should be used in at least four situations:
+\begin{itemize}
+    \item very low perfusion,
+    \item extremely small or extremely large \texttt{P\_half},
+    \item sharp transitions in sweep studies,
+    \item figures intended for publication or peer review.
+\end{itemize}
+
+In such settings, small numerical differences can be physiologically amplified by the nonlinear saturation and consumption terms.
+
+\section{Diagnostic layer and inverse reconstruction}
+The application imports \texttt{OxygenationInput} and \texttt{alert\_decision} from \texttt{oxygenation\_diagnostic\_mvp.py}. The diagnostic module converts blood-gas variables and a local sensor reading into a continuous risk score and five class probabilities.
+
+The main GUI then offers a second step: reconstruction of a plausible Krogh cylinder from these measured or assumed quantities. This is scientifically useful because a low tissue sensor value can arise from multiple causes, including low inflow oxygen, reduced perfusion, altered hemoglobin unloading, or increased effective tissue demand.
+
+\subsection{From venous saturation to a fitting target}
+When the reconstruction workflow is started, the GUI transforms the optional venous saturation into a target venous PO$_2$ by inverting the Hill equation:
+\[
+P_{v,target} = P_{50,eff}\left(\frac{S_v}{1-S_v}\right)^{1/n}.
+\]
+
+In the code, the saturation is clamped to the interval $[0.01, 0.99]$ before this computation to avoid singular values.
+
+\subsection{Joint fitting of perfusion and mitochondrial demand}
+The scientifically most important inverse function is \texttt{\_fit\_joint\_krogh\_parameters(...)}. It performs a genuine two-parameter search over:
+\begin{itemize}
+    \item perfusion factor candidates generated by \texttt{np.geomspace(0.35, 5.0, 15)} plus the reference value 1.0,
+    \item \texttt{P\_half} candidates generated by \texttt{np.geomspace(0.05, 300.0, 22)} plus the reference value 1.0.
+\end{itemize}
+
+For each candidate pair, the code solves the full mechanistic oxygen model and evaluates
+\[
+J = |PO_{2,sensor}^{sim} - PO_{2,sensor}^{target}| + w_v |P_v^{sim} - P_v^{target}| + 0.10|\ln(perf)| + 0.02|\ln(P_{half})|.
+\]
+
+This objective function explains exactly how the fitting behaves:
+\begin{enumerate}
+    \item sensor mismatch is the primary target,
+    \item venous mismatch is a secondary constraint weighted by $w_v$,
+    \item logarithmic penalties discourage implausibly extreme parameters.
+\end{enumerate}
+
+\subsection{Why different venous weights are used}
+If the venous saturation field is left blank, or remains at the default value of 75\%, the code assigns \texttt{venous\_weight = 0.15}. If the user provides a real venous saturation value, the weight becomes \texttt{0.55}. This distinction is important: the model assumes that a default value is only a soft hint, whereas an explicitly entered value should influence the fit more strongly.
+
+\subsection{How fit quality is judged}
+A fit warning is raised when the sensor error exceeds 6 mmHg, or when the venous error exceeds 4 mmHg under a strongly weighted venous constraint. Consequently, a ``good fit'' in this workflow means more than a low objective value. It also means that the solution remains physiologically plausible and that the reconstruction is not driven by an extreme parameter combination.
+
+\subsection{What the optimized diagnostic workflow now reports}
+An important recent improvement is that the diagnostic section no longer stops at a single alert color. The current verified workflow now reports:
+\begin{enumerate}
+    \item the dominant feature-level drivers of the alert score,
+    \item a best-fit assumption summary stating which perfusion and mitoP50 adjustments were required to reproduce the measured pattern,
+    \item hidden hypoxic burden fractions below 1, 5, 10, 15, and 20 mmHg,
+    \item radius-conditioned results for 30, 50, and 100~\textmu m tissue-cylinder assumptions,
+    \item a clinically oriented context note clarifying that the stronger alert may be relevant mainly if the larger or swollen-tissue geometry is clinically plausible.
+\end{enumerate}
+
+This change addresses a major interpretive limitation of earlier versions. Previously, a user could see an elevated alert without immediately knowing whether it reflected a robust geometry-independent finding or whether it emerged mainly under a specific tissue-radius assumption. The present workflow makes that dependency explicit.
+
+\section{Reporting and export workflow}
+The documentation and export layer has also been expanded substantially. The GUI can now save:
+\begin{itemize}
+    \item complete case snapshots with persistent UI state,
+    \item structured diagnostic reports in JSON or CSV format,
+    \item English publication reports in TXT, TEX, or PDF format.
+\end{itemize}
+If a Krogh reconstruction figure has been generated, the latest plot is stored and inserted automatically into the publication report. This makes the software more suitable for laboratory documentation, manuscript preparation, and retrospective review of interesting cases.
+
+\section{Libraries and their concrete roles}
+The numerically relevant imported libraries are the following:
+\begin{itemize}
+    \item \texttt{numpy}: mesh generation, clipping, interpolation, averaging, percentiles, and array algebra,
+    \item \texttt{scipy.integrate.solve\_ivp}: adaptive integration of the capillary ODE,
+    \item \texttt{scipy.optimize.brentq}: one-dimensional root finding for the auxiliary venous fitting routine,
+    \item \texttt{pandas}: result export and tabular template generation,
+    \item \texttt{matplotlib}: scientific plotting for single runs and sweeps.
+\end{itemize}
+
+The key point is that no opaque machine-learning package determines the mechanistic simulation outcome. The calculation remains almost entirely reproducible from a small set of explicit NumPy and SciPy calls.
+
+\section{Interpretation guidelines for publication use}
+When reporting results, one should avoid relying on a single scalar metric. A robust interpretation should usually combine:
+\begin{enumerate}
+    \item venous capillary PO$_2$ as a measure of transport reserve,
+    \item the 5th tissue percentile as a robust low-oxygen descriptor,
+    \item hypoxic area fractions for spatial burden,
+    \item the fitted perfusion factor and \texttt{P\_half} for mechanistic interpretation.
+\end{enumerate}
+
+In particular, a very low tissue signal does not automatically imply a unique pathophysiological cause. The inverse solution is model-based and therefore should be read as the most plausible explanation within the assumptions of the current Krogh framework.
+
+\section{Limitations}
+The current implementation is scientifically strong, but intentionally reduced. The main limitations are:
+\begin{itemize}
+    \item no explicit capillary network architecture,
+    \item no time-dependent pulsatility,
+    \item no formal statistical uncertainty intervals on inferred parameters; the current GUI now reports a practical near-optimal fit band for mitoP50 and perfusion, but this is not yet a validated posterior interval,
+    \item geometric uncertainty is only partially addressed: the software now compares 30, 50, and 100~\textmu m tissue-radius assumptions, but this remains a sensitivity analysis rather than a full morphometric model,
+    \item no formal parameter identifiability proof,
+    \item a transparent grid search rather than a high-dimensional Bayesian inverse solver.
+\end{itemize}
+
+These limitations do not invalidate the program. They define its scope: interpretable, mechanistic, and computationally controllable micro-oxygenation analysis.
+
+\section{Conclusion}
+The code in \texttt{krogh\_GUI.py} implements a coherent chain from physiological transport theory to numerical simulation and inverse diagnostic interpretation. The mathematical foundations are not merely mentioned in the program; they are encoded in clearly named functions, solved with explicit numerical routines, and exposed through user-adjustable parameters. This makes the software particularly well suited for research-oriented and publication-adjacent work where the provenance of each result must remain explainable.
+
+\end{document}
