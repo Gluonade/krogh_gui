@@ -15,6 +15,7 @@ class NumericSettings:
     axial_diffusion_tol: float
     axial_coupling_max_iter: int
     axial_coupling_tol: float
+    bootstrap_samples: int
 
     def to_dict(self) -> dict[str, float | int]:
         return asdict(self)
@@ -43,6 +44,7 @@ class DiagnosticRunInput:
     pH: float
     temperature_c: float
     sensor_po2: float
+    metabolic_rate_rel: float = 1.0
     hemoglobin_g_dl: float = 13.5
     venous_sat_percent: float = 75.0
     yellow_threshold: float = 0.25

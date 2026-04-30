@@ -49,6 +49,63 @@ class ReconstructionUncertaintyTests(unittest.TestCase):
         self.assertLessEqual(uncertainty["perfusion_low"], fit["perfusion_factor"])
         self.assertGreaterEqual(uncertainty["perfusion_high"], fit["perfusion_factor"])
 
+    def test_uncertainty_reports_bootstrap_interval_metadata(self):
+        reconstructor = self._build_reconstructor()
+
+        fit = reconstructor.fit_joint_parameters(
+            P_inlet=90.0,
+            sensor_target=70.0,
+            P_v_target=55.0,
+            pH=7.4,
+            pCO2=40.0,
+            temp_c=37.0,
+            bootstrap_samples=24,
+        )
+
+        uncertainty = fit["uncertainty"]
+        self.assertIn("method", uncertainty)
+        self.assertIn("bootstrap_samples", uncertainty)
+        self.assertIn("bootstrap_successes", uncertainty)
+        self.assertIn("p_half_p10", uncertainty)
+        self.assertIn("p_half_p90", uncertainty)
+        self.assertIn("perfusion_p10", uncertainty)
+        self.assertIn("perfusion_p90", uncertainty)
+        self.assertEqual(uncertainty["bootstrap_samples"], 24)
+        self.assertGreaterEqual(uncertainty["bootstrap_successes"], 10)
+        self.assertLessEqual(uncertainty["p_half_p10"], uncertainty["p_half_p90"])
+        self.assertLessEqual(uncertainty["perfusion_p10"], uncertainty["perfusion_p90"])
+        self.assertIn("bootstrap", uncertainty["summary"].lower())
+
+    def test_uncertainty_reports_identifiability_metadata(self):
+        reconstructor = self._build_reconstructor()
+
+        fit = reconstructor.fit_joint_parameters(
+            P_inlet=90.0,
+            sensor_target=70.0,
+            P_v_target=55.0,
+            pH=7.4,
+            pCO2=40.0,
+            temp_c=37.0,
+            bootstrap_samples=16,
+        )
+
+        uncertainty = fit["uncertainty"]
+        self.assertIn("identifiability", uncertainty)
+        self.assertIn("identifiability_summary", uncertainty)
+        self.assertIn("parameter_correlation", uncertainty)
+        self.assertIn("profile_p_half_low", uncertainty)
+        self.assertIn("profile_p_half_high", uncertainty)
+        self.assertIn("profile_perfusion_low", uncertainty)
+        self.assertIn("profile_perfusion_high", uncertainty)
+        self.assertIn("sensitivity_matrix", uncertainty)
+        self.assertIn("fisher_determinant", uncertainty)
+        self.assertIn("fisher_condition", uncertainty)
+        self.assertIn(uncertainty["identifiability"], {"strong", "moderate", "weak"})
+        self.assertLessEqual(uncertainty["profile_p_half_low"], uncertainty["profile_p_half_high"])
+        self.assertLessEqual(uncertainty["profile_perfusion_low"], uncertainty["profile_perfusion_high"])
+        self.assertGreaterEqual(uncertainty["fisher_determinant"], 0.0)
+        self.assertIn("identifiability", uncertainty["identifiability_summary"].lower())
+
     def test_plot_data_contains_hidden_hypoxic_burden_summary(self):
         reconstructor = self._build_reconstructor()
         fit = reconstructor.fit_joint_parameters(
@@ -110,6 +167,22 @@ class ReconstructionUncertaintyTests(unittest.TestCase):
         self.assertIn("30 µm", plot_data["radius_sensitivity_summary"])
         self.assertIn("alert_level", plot_data["radius_scenarios"]["normal_30um"])
         self.assertIn("alert_level", plot_data["radius_scenarios"]["high_100um"])
+
+    def test_joint_fit_enforces_sensor_mean_target(self):
+        reconstructor = self._build_reconstructor()
+
+        fit = reconstructor.fit_joint_parameters(
+            P_inlet=90.0,
+            sensor_target=70.0,
+            P_v_target=55.0,
+            pH=7.4,
+            pCO2=40.0,
+            temp_c=37.0,
+            venous_weight=1.5,
+        )
+
+        self.assertAlmostEqual(float(fit["sensor_sim"]), 70.0, places=2)
+        self.assertLessEqual(float(fit["sensor_error"]), 0.02)
 
 
 if __name__ == "__main__":

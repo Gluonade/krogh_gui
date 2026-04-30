@@ -101,6 +101,8 @@ class UIWindowBuilder:
             ("pCO2_mmHg", "40.0"),
             ("Temp_C", "37.0"),
             ("Perfusion_factor", "1.0"),
+            ("Metabolic_rate_rel", "1.0"),
+            ("Tissue_radius_um", "100"),
             ("High_PO2_threshold_1_mmHg", "100.0"),
             ("High_PO2_threshold_2_mmHg", "200.0"),
             ("High_PO2_additional_thresholds_mmHg", ""),
@@ -122,6 +124,14 @@ class UIWindowBuilder:
                     width=16,
                 )
                 entry.set(gui.t(f"reference_{default}"))
+            elif name == "Tissue_radius_um":
+                entry = ttk.Combobox(
+                    params,
+                    values=("30", "50", "100"),
+                    state="readonly",
+                    width=12,
+                )
+                entry.set(str(default))
             else:
                 entry_width = 28 if name in {"High_PO2_additional_thresholds_mmHg", "High_PO2_relative_thresholds_percent"} else 12
                 entry = ttk.Entry(params, width=entry_width)
@@ -333,6 +343,7 @@ class UIWindowBuilder:
 
         diagnostic_group = ttk.LabelFrame(diagnostic_frame, text=gui.t("diagnostic_group"))
         diagnostic_group.pack(fill="x", padx=10, pady=10)
+        diagnostic_group.columnconfigure(0, weight=1)
 
         gui.diagnostic_entries = {}
         diagnostic_fields = [
@@ -341,86 +352,137 @@ class UIWindowBuilder:
             ("pH", "diag_ph", "7.40"),
             ("temperature_c", "diag_temp", "37.0"),
             ("sensor_po2", "diag_sensor_po2", "25.0"),
+            ("metabolic_rate_rel", "diag_metabolic_rate_rel", "1.00"),
             ("hemoglobin_g_dl", "diag_hemoglobin", ""),
             ("venous_sat_percent", "diag_venous_sat", ""),
             ("yellow_threshold", "diag_yellow_threshold", "0.40"),
             ("orange_threshold", "diag_orange_threshold", "0.60"),
             ("red_threshold", "diag_red_threshold", "0.80"),
         ]
+
+        column_count = 3
+        diagnostic_columns = []
+        for column_index in range(column_count):
+            column_frame = ttk.Frame(diagnostic_group)
+            column_frame.grid(row=0, column=column_index, padx=8, pady=6, sticky="nsew")
+            column_frame.columnconfigure(0, weight=1)
+            diagnostic_group.columnconfigure(column_index, weight=1)
+            diagnostic_columns.append(column_frame)
+
         for i, (field_key, label_key, default_value) in enumerate(diagnostic_fields):
-            row = i // 3
-            col = (i % 3) * 2
-            ttk.Label(diagnostic_group, text=gui.t(label_key)).grid(row=row, column=col, padx=8, pady=6, sticky="e")
-            entry = ttk.Entry(diagnostic_group, width=12)
+            column_index = i % column_count
+            row = (i // column_count) * 2
+            parent = diagnostic_columns[column_index]
+            ttk.Label(
+                parent,
+                text=gui.t(label_key),
+                anchor="w",
+                justify="left",
+                wraplength=220,
+            ).grid(row=row, column=0, padx=0, pady=(0, 2), sticky="w")
+            entry = ttk.Entry(parent, width=14)
             entry.insert(0, default_value)
-            entry.grid(row=row, column=col + 1, padx=8, pady=6, sticky="w")
+            entry.grid(row=row + 1, column=0, padx=0, pady=(0, 6), sticky="w")
             gui.diagnostic_entries[field_key] = entry
 
-        ttk.Label(diagnostic_group, text=gui.t("diag_optional_hint")).grid(row=3, column=0, columnspan=6, padx=8, pady=(0, 4), sticky="w")
+        lower_row = 1
 
-        ttk.Label(diagnostic_group, text="Radius mode").grid(row=4, column=0, padx=8, pady=6, sticky="e")
-        gui.diagnostic_radius_mode_combo = ttk.Combobox(
+        ttk.Label(
             diagnostic_group,
+            text=gui.t("diag_optional_hint"),
+            wraplength=1100,
+            justify="left",
+        ).grid(row=lower_row, column=0, columnspan=3, padx=8, pady=(0, 4), sticky="w")
+        lower_row += 1
+
+        radius_controls = ttk.Frame(diagnostic_group)
+        radius_controls.grid(row=lower_row, column=0, columnspan=3, padx=8, pady=6, sticky="w")
+
+        ttk.Label(radius_controls, text="Radius mode").grid(row=0, column=0, padx=(0, 8), pady=0, sticky="w")
+        gui.diagnostic_radius_mode_combo = ttk.Combobox(
+            radius_controls,
             textvariable=gui.diagnostic_radius_mode_var,
             values=["all variants", "selected radius only"],
             state="readonly",
             width=18,
         )
-        gui.diagnostic_radius_mode_combo.grid(row=4, column=1, padx=8, pady=6, sticky="w")
+        gui.diagnostic_radius_mode_combo.grid(row=0, column=1, padx=(0, 16), pady=0, sticky="w")
         gui.diagnostic_radius_mode_combo.bind("<<ComboboxSelected>>", gui._toggle_diagnostic_radius_variant_controls)
 
-        ttk.Label(diagnostic_group, text="Selected radius").grid(row=4, column=2, padx=8, pady=6, sticky="e")
+        ttk.Label(radius_controls, text="Selected radius").grid(row=0, column=2, padx=(0, 8), pady=0, sticky="w")
         gui.diagnostic_radius_variant_combo = ttk.Combobox(
-            diagnostic_group,
+            radius_controls,
             textvariable=gui.diagnostic_radius_variant_var,
             values=["30 µm", "50 µm", "100 µm"],
             state="readonly",
             width=12,
         )
-        gui.diagnostic_radius_variant_combo.grid(row=4, column=3, padx=8, pady=6, sticky="w")
+        gui.diagnostic_radius_variant_combo.grid(row=0, column=3, padx=0, pady=0, sticky="w")
         gui._toggle_diagnostic_radius_variant_controls()
+        lower_row += 1
 
         diagnostic_controls = ttk.Frame(diagnostic_group)
-        diagnostic_controls.grid(row=5, column=0, columnspan=6, padx=8, pady=(4, 8), sticky="w")
+        diagnostic_controls.grid(row=lower_row, column=0, columnspan=3, padx=8, pady=(4, 8), sticky="w")
+        diagnostic_controls.columnconfigure(0, weight=1)
+        controls_row_top = ttk.Frame(diagnostic_controls)
+        controls_row_top.grid(row=0, column=0, sticky="w")
+        controls_row_bottom = ttk.Frame(diagnostic_controls)
+        controls_row_bottom.grid(row=1, column=0, sticky="w", pady=(6, 0))
         gui.use_single_case_button = ttk.Button(
-            diagnostic_controls,
+            controls_row_top,
             text=gui.t("use_single_case_button"),
             command=gui._fill_diagnostic_from_single_case,
         )
         gui.use_single_case_button.pack(side="left", padx=(0, 6))
         gui.run_diagnostic_button = ttk.Button(
-            diagnostic_controls,
+            controls_row_top,
             text=gui.t("run_diagnostic_button"),
             command=gui._run_diagnostic_from_inputs,
         )
         gui.run_diagnostic_button.pack(side="left", padx=(0, 6))
         gui.save_diagnostic_template_button = ttk.Button(
-            diagnostic_controls,
+            controls_row_top,
             text=gui.t("save_diagnostic_template_button"),
             command=gui._save_diagnostic_calibration_template,
         )
         gui.save_diagnostic_template_button.pack(side="left")
 
         gui.save_diagnostic_report_button = ttk.Button(
-            diagnostic_controls,
+            controls_row_top,
             text=gui.t("save_diagnostic_report_button"),
             command=gui._save_diagnostic_report,
         )
         gui.save_diagnostic_report_button.pack(side="left", padx=(6, 0))
 
         gui.save_publication_report_button = ttk.Button(
-            diagnostic_controls,
+            controls_row_bottom,
             text=gui.t("save_publication_report_button"),
             command=gui._save_publication_report,
         )
         gui.save_publication_report_button.pack(side="left", padx=(6, 0))
 
         gui.reconstruct_krogh_button = ttk.Button(
-            diagnostic_controls,
+            controls_row_bottom,
             text=gui.t("reconstruct_krogh_button"),
             command=gui._run_reconstruct_krogh,
         )
         gui.reconstruct_krogh_button.pack(side="left", padx=(6, 0))
+
+        gui.run_reconstruction_benchmark_button = ttk.Button(
+            controls_row_bottom,
+            text=gui.t("run_reconstruction_benchmark_button"),
+            command=gui._run_reconstruction_benchmark_from_gui,
+        )
+        gui.run_reconstruction_benchmark_button.pack(side="left", padx=(6, 0))
+
+        gui.auto_save_radius_plots_check = ttk.Checkbutton(
+            controls_row_bottom,
+            text="Auto-save independent 30/50/100 µm reconstructions to Diagnostic reports",
+            variable=gui.auto_save_radius_plots_var,
+            onvalue=True,
+            offvalue=False,
+        )
+        gui.auto_save_radius_plots_check.pack(side="left", padx=(14, 0))
 
         gui.diagnostic_output = tk.Text(diagnostic_frame, height=8, wrap="word")
         gui.diagnostic_output.pack(fill="both", expand=True, padx=10, pady=(0, 10))

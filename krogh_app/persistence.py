@@ -17,9 +17,9 @@ class CaseRepository:
 
     _ENGLISH_STATE_LABELS = {
         "normoxia": "normoxia",
-        "mild_hypoxia": "mild tissue hypoxia",
-        "compensated_hypoxia": "compensated tissue hypoxia",
-        "severe_hypoxia": "severe tissue hypoxia",
+        "intermediate_oxygenation": "intermediate oxygenation",
+        "low_oxygenation_approaching_critical": "low tissue oxygen approaching critical values",
+        "hypoxia": "hypoxia",
         "profound_hypoxia": "profound tissue hypoxia",
     }
 
@@ -103,17 +103,16 @@ class CaseRepository:
         if alert_level and alert_level != "unknown":
             return alert_level
 
-        sensor_avg = self._safe_float(scenario.get("sensor_avg")) or 0.0
         below_1 = self._safe_float(scenario.get("fraction_below_1")) or 0.0
         below_5 = self._safe_float(scenario.get("fraction_below_5")) or 0.0
         below_10 = self._safe_float(scenario.get("fraction_below_10")) or 0.0
         below_15 = self._safe_float(scenario.get("fraction_below_15")) or 0.0
 
-        if below_1 > 0.01 or below_5 >= 0.10 or (sensor_avg > 0.0 and sensor_avg < 15.0):
+        if below_1 > 0.01 or below_5 >= 0.10 or below_10 >= 0.35:
             return "red"
-        if below_5 >= 0.03 or below_10 >= 0.20 or (sensor_avg > 0.0 and sensor_avg < 18.0):
+        if below_5 >= 0.03 or below_10 >= 0.20:
             return "orange"
-        if below_10 >= 0.08 or below_15 >= 0.20 or (sensor_avg > 0.0 and sensor_avg < 23.0):
+        if below_10 >= 0.05 or below_15 >= 0.30:
             return "yellow"
         return "green"
 
@@ -152,6 +151,7 @@ class CaseRepository:
                 f"({selected_alert}) and is most relevant if that geometry is clinically plausible for the patient."
             )
 
+        severity = {"unknown": -1, "green": 0, "yellow": 1, "orange": 2, "red": 3}
         unique_alerts = {alert_level for _, _, alert_level in labels}
         if len(unique_alerts) == 1:
             only_alert = labels[0][2]
@@ -160,9 +160,20 @@ class CaseRepository:
                 f"but all tested variants remained {only_alert} ({label_text}), which supports a similar clinical reading across plausible geometries."
             )
 
+        max_severity = max(severity.get(alert_level, -1) for _, _, alert_level in labels)
+        highest = [(key, radius_text) for key, radius_text, alert_level in labels if severity.get(alert_level, -1) == max_severity]
+        highest_labels = ", ".join(radius_text for _, radius_text in highest)
+        only_high_100 = len(highest) == 1 and highest[0][0] == "high_100um"
+
+        if only_high_100:
+            return (
+                "Clinical context note: alert interpretation is conditional on the assumed tissue radius "
+                f"({label_text}). In this case, the highest alert appears under the larger/swollen-tissue condition ({highest_labels}) and is most relevant if that geometry is clinically plausible."
+            )
+
         return (
             "Clinical context note: alert interpretation is conditional on the assumed tissue radius "
-            f"({label_text}). In this case, the higher alert mainly appears under the larger/swollen-tissue condition and is most relevant if that geometry is clinically plausible."
+            f"({label_text}). In this case, the highest alert appears for {highest_labels}, so interpretation should follow those radius assumptions directly rather than only the larger/swollen-tissue condition."
         )
 
     def _build_radius_summary(self, report: dict[str, Any]) -> str:
@@ -191,7 +202,23 @@ class CaseRepository:
 
         summary = "Radius-conditioned summary: " + "; ".join(parts) + "."
         if len(set(alert_levels)) > 1:
-            summary += " The interpretation is conditional on the assumed tissue radius, and the higher alert mainly appears under the larger/swollen-tissue geometry if that condition is clinically plausible."
+            severity = {"unknown": -1, "green": 0, "yellow": 1, "orange": 2, "red": 3}
+            label_by_key = {"normal_30um": "30 µm", "increased_50um": "50 µm", "high_100um": "100 µm"}
+            ranked = []
+            for key in ordered_keys:
+                scenario = scenario_map.get(key)
+                if not isinstance(scenario, dict):
+                    continue
+                ranked.append((key, self._classify_saved_radius_alert(scenario)))
+
+            if ranked:
+                max_severity = max(severity.get(alert, -1) for _, alert in ranked)
+                highest_keys = [key for key, alert in ranked if severity.get(alert, -1) == max_severity]
+                highest_text = ", ".join(label_by_key.get(key, key) for key in highest_keys)
+                if len(highest_keys) == 1 and highest_keys[0] == "high_100um":
+                    summary += " The interpretation is conditional on the assumed tissue radius, and the highest alert appears under the larger/swollen-tissue geometry if that condition is clinically plausible."
+                else:
+                    summary += f" The interpretation is conditional on the assumed tissue radius, and the highest alert in this case appears for {highest_text}."
         else:
             summary += " The alert pattern is similar across the tested radius assumptions, supporting a stable clinical interpretation."
         return summary
@@ -204,13 +231,18 @@ class CaseRepository:
         confidence = self._safe_float(report.get("confidence"))
         p_half = report.get("reconstruction_P_half_fit", "n/a")
         perfusion = report.get("reconstruction_perfusion_factor", "n/a")
+        metabolic = report.get("reconstruction_metabolic_rate_rel", "n/a")
         uncertainty_summary = report.get("reconstruction_uncertainty_summary", "not available")
+        identifiability_summary = str(report.get("reconstruction_uncertainty_identifiability_summary", "") or "").strip()
+        identifiability_level = str(report.get("reconstruction_uncertainty_identifiability", "") or "").strip().lower()
         assumption_summary = str(report.get("reconstruction_assumption_summary", "") or "").strip()
         burden_summary = str(report.get("reconstruction_hypoxic_burden_summary", "") or "").strip()
+        burden_10 = self._safe_float(report.get("reconstruction_hypoxic_below_10"))
         radius_summary = self._build_radius_summary(report)
         radius_condition_note = self._build_radius_condition_note(report)
         driver_summary = str(report.get("driver_summary", "") or "").strip()
         fit_warning_value = report.get("reconstruction_fit_warning", False)
+        fit_boundary_hit_value = report.get("reconstruction_fit_boundary_hit", False)
 
         concern_map = {
             "green": "Low concern",
@@ -230,12 +262,22 @@ class CaseRepository:
         else:
             certainty_text = "The classification should be interpreted cautiously because the competing state probabilities remain relatively close together."
 
-        clinical = (
-            f"{concern}: the integrated blood-gas and sensor pattern is most consistent with {state_label}. "
-            f"The current alert category is {alert_label}. "
-            f"Risk score: {report.get('risk_score', 'n/a')}. "
-            f"Confidence: {report.get('confidence', 'n/a')}. {certainty_text}"
-        )
+        alert_key = str(report.get("alert_level", "") or "").strip().lower()
+        if alert_key == "green" and burden_10 is not None and burden_10 <= 0.01:
+            clinical = (
+                f"{concern}: the integrated blood-gas and sensor pattern remains low-risk overall. "
+                f"The probabilistic state label was {state_label}, but the reconstructed tissue field suggests no relevant hidden hypoxic burden. "
+                f"The current alert category is {alert_label}. "
+                f"Risk score: {report.get('risk_score', 'n/a')}. "
+                f"Confidence: {report.get('confidence', 'n/a')}. {certainty_text}"
+            )
+        else:
+            clinical = (
+                f"{concern}: the integrated blood-gas and sensor pattern is most consistent with {state_label}. "
+                f"The current alert category is {alert_label}. "
+                f"Risk score: {report.get('risk_score', 'n/a')}. "
+                f"Confidence: {report.get('confidence', 'n/a')}. {certainty_text}"
+            )
         clinical += f" {radius_condition_note}"
         if driver_summary:
             clean_driver = driver_summary.strip()
@@ -248,9 +290,11 @@ class CaseRepository:
 
         findings = (
             f"The Krogh-based reconstruction suggests an effective mitoP50 near {p_half} mmHg and "
-            f"a perfusion factor near {perfusion} x baseline. "
+            f"a perfusion factor near {perfusion} x baseline with relative tissue metabolic demand near {metabolic} x baseline. "
             f"The practical uncertainty band is reported as: {uncertainty_summary}."
         )
+        if identifiability_summary:
+            findings += f" Local identifiability check: {identifiability_summary}."
         if assumption_summary:
             findings += f" {assumption_summary}"
         if burden_summary:
@@ -266,8 +310,12 @@ class CaseRepository:
             cautions += " Prompt reassessment is advisable when the overall clinical picture is compatible with severe oxygenation impairment."
         if confidence is not None and confidence < 0.6:
             cautions += " The probabilistic classification is not strongly dominant and should be checked against repeat measurements."
+        if identifiability_level == "weak":
+            cautions += " Parameter-separation note: mitoP50 and perfusion are only weakly distinguishable for this case, so individual fitted values should be interpreted cautiously."
         if bool(fit_warning_value):
             cautions += " Reconstruction note: the diagnostic inputs are only partly representable by a single Krogh cylinder, so the reported fit should be interpreted as a best joint compromise."
+        if bool(fit_boundary_hit_value) and not (alert_key == "green" and burden_10 is not None and burden_10 <= 0.01):
+            cautions += " Parameter-boundary note: at least one fitted parameter is at its configured limit (mitoP50, perfusion, or metabolic rate), so expanding bounds or adding constraints may change the solution."
 
         return {
             "clinical": clinical,
@@ -311,6 +359,7 @@ class CaseRepository:
             "pH": gui.diagnostic_entries.get("pH").get() if hasattr(gui, "diagnostic_entries") and gui.diagnostic_entries.get("pH") else "",
             "temperature_c": gui.diagnostic_entries.get("temperature_c").get() if hasattr(gui, "diagnostic_entries") and gui.diagnostic_entries.get("temperature_c") else "",
             "sensor_po2": gui.diagnostic_entries.get("sensor_po2").get() if hasattr(gui, "diagnostic_entries") and gui.diagnostic_entries.get("sensor_po2") else "",
+            "metabolic_rate_rel": gui.diagnostic_entries.get("metabolic_rate_rel").get() if hasattr(gui, "diagnostic_entries") and gui.diagnostic_entries.get("metabolic_rate_rel") else "",
             "hemoglobin_g_dl": gui.diagnostic_entries.get("hemoglobin_g_dl").get() if hasattr(gui, "diagnostic_entries") and gui.diagnostic_entries.get("hemoglobin_g_dl") else "",
             "venous_sat_percent": gui.diagnostic_entries.get("venous_sat_percent").get() if hasattr(gui, "diagnostic_entries") and gui.diagnostic_entries.get("venous_sat_percent") else "",
             "yellow_threshold": gui.diagnostic_entries.get("yellow_threshold").get() if hasattr(gui, "diagnostic_entries") and gui.diagnostic_entries.get("yellow_threshold") else "",
@@ -355,14 +404,90 @@ class CaseRepository:
         follow_up = self._build_follow_up_recommendation(report)
         figure_path = str(report.get("reconstruction_report_figure_path", "") or "")
         normalized_figure_path = figure_path.replace(os.sep, "/")
+        radius_figure_paths = report.get("reconstruction_radius_report_figure_paths")
+        radius_scenarios = report.get("reconstruction_radius_scenarios")
+        ordered_radius_keys = ["normal_30um", "increased_50um", "high_100um"]
+        has_independent_radius_figures = bool(
+            isinstance(radius_figure_paths, dict)
+            and any(radius_figure_paths.get(key) for key in ordered_radius_keys)
+        )
         figure_section = ""
-        if figure_path and os.path.exists(figure_path):
+        if figure_path and os.path.exists(figure_path) and not has_independent_radius_figures:
             figure_section = """
 \\section*{Embedded Figure}
 \\begin{center}
-\\includegraphics[width=0.86\\linewidth]{%s}
+\\includegraphics[width=0.86\\linewidth]{\\detokenize{%s}}
 \\end{center}
 """ % normalized_figure_path
+
+        if isinstance(radius_figure_paths, dict):
+            for key in ordered_radius_keys:
+                artifact_value = radius_figure_paths.get(key)
+                radius_label = {
+                    "normal_30um": "30 µm",
+                    "increased_50um": "50 µm",
+                    "high_100um": "100 µm",
+                }.get(key, key)
+                artifact_paths: list[tuple[str, str]] = []
+                if isinstance(artifact_value, dict):
+                    path_map = {
+                        "map_profile": "PO2 map and axial profile",
+                        "diagnostic_3d_prob": "3D cylinder and probabilistic side bars",
+                        "po2_distribution": "PO2 percentage distribution",
+                    }
+                    for artifact_key in ["map_profile", "diagnostic_3d_prob", "po2_distribution"]:
+                        path_value = str(artifact_value.get(artifact_key, "") or "")
+                        if path_value and os.path.exists(path_value):
+                            artifact_paths.append((path_map[artifact_key], path_value.replace(os.sep, "/")))
+                else:
+                    path_value = str(artifact_value or "")
+                    if path_value and os.path.exists(path_value):
+                        artifact_paths.append(("PO2 map and axial profile", path_value.replace(os.sep, "/")))
+
+                if not artifact_paths:
+                    continue
+
+                figure_section += """
+\\section*{Independent Radius Reconstruction (%s)}
+""" % self._latex_escape(radius_label)
+
+                for artifact_title, normalized_path in artifact_paths:
+                    figure_section += """
+\\subsection*{%s}
+\\begin{center}
+\\includegraphics[width=0.92\\linewidth]{\\detokenize{%s}}
+\\end{center}
+""" % (self._latex_escape(artifact_title), normalized_path)
+
+        radius_parameter_table_section = ""
+        if isinstance(radius_scenarios, dict):
+            rows = []
+            labels = {
+                "normal_30um": "30 µm",
+                "increased_50um": "50 µm",
+                "high_100um": "100 µm",
+            }
+            for key in ordered_radius_keys:
+                scenario = radius_scenarios.get(key)
+                if not isinstance(scenario, dict):
+                    continue
+                perfusion = self._safe_float(scenario.get("perfusion_factor"))
+                metabolic = self._safe_float(scenario.get("metabolic_rate_rel"))
+                p_half = self._safe_float(scenario.get("P_half_fit"))
+                if perfusion is None or metabolic is None or p_half is None:
+                    continue
+                rows.append(
+                    f"{self._latex_escape(labels.get(key, key))} & {perfusion:.3f} & {metabolic:.3f} & {p_half:.3f} \\\\ \\hline"
+                )
+            if rows:
+                radius_parameter_table_section = """
+\\section*{Independent Radius Fit Comparison}
+\\begin{tabular}{|l|c|c|c|}
+\\hline
+Radius assumption & Perfusion (x baseline) & Metabolic (x baseline) & mitoP50 (mmHg) \\\\ \\hline
+%s
+\\end{tabular}
+""" % "\n".join(rows)
 
         return """\\documentclass[11pt]{article}
 \\usepackage[margin=1in]{geometry}
@@ -383,6 +508,7 @@ Blood-gas PCO2 & %s mmHg \\\\ \\hline
 pH & %s \\\\ \\hline
 Temperature & %s C \\\\ \\hline
 Sensor PO2 & %s mmHg \\\\ \\hline
+Relative tissue O2 consumption & %s x baseline \\\\ \\hline
 Hemoglobin & %s g/dL \\\\ \\hline
 Venous saturation & %s %% \\\\ \\hline
 \\end{tabular}
@@ -404,6 +530,7 @@ Certainty: %s\\
 \\section*{Krogh reconstruction}
 Fitted mitoP50: %s mmHg\\
 Perfusion factor: %s x baseline\\
+Relative tissue O2 consumption: %s x baseline\\
 Simulated venous PO2: %s mmHg\\
 Simulated sensor PO2: %s mmHg\\
 Uncertainty band: %s
@@ -415,6 +542,8 @@ Uncertainty band: %s
 %s
 
 \\section*{Radius Sensitivity Across Assumed Tissue Radius}
+%s
+
 %s
 
 \\section*{Cautions and Limitations}
@@ -430,6 +559,7 @@ Uncertainty band: %s
             self._latex_escape(report.get("pH", "")),
             self._latex_escape(report.get("temperature_c", "")),
             self._latex_escape(report.get("sensor_po2", "")),
+            self._latex_escape(report.get("metabolic_rate_rel", "")),
             self._latex_escape(report.get("hemoglobin_g_dl", "")),
             self._latex_escape(report.get("venous_sat_percent", "")),
             self._latex_escape(state_label),
@@ -442,12 +572,14 @@ Uncertainty band: %s
             self._latex_escape(interpretation["findings"]),
             self._latex_escape(report.get("reconstruction_P_half_fit", "n/a")),
             self._latex_escape(report.get("reconstruction_perfusion_factor", "n/a")),
+            self._latex_escape(report.get("reconstruction_metabolic_rate_rel", "n/a")),
             self._latex_escape(report.get("reconstruction_P_v_sim", "n/a")),
             self._latex_escape(report.get("reconstruction_sensor_sim", "n/a")),
             self._latex_escape(uncertainty_summary),
             self._latex_escape(assumption_summary),
             self._latex_escape(burden_summary),
             self._latex_escape(radius_summary),
+            radius_parameter_table_section,
             self._latex_escape(interpretation["cautions"]),
             self._latex_escape(follow_up),
             figure_section,
@@ -461,6 +593,29 @@ Uncertainty band: %s
         burden_summary = report.get("reconstruction_hypoxic_burden_summary", "No hidden hypoxic burden estimate is available for this case.")
         radius_summary = self._build_radius_summary(report)
         radius_condition_note = self._build_radius_condition_note(report)
+        radius_scenarios = report.get("reconstruction_radius_scenarios")
+        comparison_lines: list[str] = []
+        if isinstance(radius_scenarios, dict):
+            ordered = [
+                ("normal_30um", "30 um"),
+                ("increased_50um", "50 um"),
+                ("high_100um", "100 um"),
+            ]
+            for key, label in ordered:
+                scenario = radius_scenarios.get(key)
+                if not isinstance(scenario, dict):
+                    continue
+                perfusion = self._safe_float(scenario.get("perfusion_factor"))
+                metabolic = self._safe_float(scenario.get("metabolic_rate_rel"))
+                p_half = self._safe_float(scenario.get("P_half_fit"))
+                if perfusion is None or metabolic is None or p_half is None:
+                    continue
+                comparison_lines.append(
+                    f"{label}: perfusion={perfusion:.3f}x | metabolic={metabolic:.3f}x | mitoP50={p_half:.3f} mmHg"
+                )
+        if not comparison_lines:
+            comparison_lines.append("Independent radius fit triplets were not available in this run.")
+
         lines = [
             "Diagnostic Summary",
             "==================",
@@ -473,6 +628,7 @@ Uncertainty band: %s
             f"pH: {report.get('pH', '')}",
             f"Temperature: {report.get('temperature_c', '')} C",
             f"Sensor PO2: {report.get('sensor_po2', '')} mmHg",
+            f"Relative tissue O2 consumption: {report.get('metabolic_rate_rel', '')} x baseline",
             f"Hemoglobin: {report.get('hemoglobin_g_dl', '')} g/dL",
             f"Venous saturation: {report.get('venous_sat_percent', '')} %",
             "",
@@ -497,6 +653,7 @@ Uncertainty band: %s
             "--------------------",
             f"Fitted mitoP50: {report.get('reconstruction_P_half_fit', 'n/a')} mmHg",
             f"Perfusion factor: {report.get('reconstruction_perfusion_factor', 'n/a')} x baseline",
+            f"Relative tissue O2 consumption: {report.get('reconstruction_metabolic_rate_rel', 'n/a')} x baseline",
             f"Simulated venous PO2: {report.get('reconstruction_P_v_sim', 'n/a')} mmHg",
             f"Simulated sensor PO2: {report.get('reconstruction_sensor_sim', 'n/a')} mmHg",
             f"Uncertainty band: {report.get('reconstruction_uncertainty_summary', 'not available')}",
@@ -513,6 +670,10 @@ Uncertainty band: %s
             "----------------------------------------------",
             str(radius_summary),
             "",
+            "Independent Radius Fit Comparison",
+            "--------------------------------",
+            *comparison_lines,
+            "",
             "Cautions and Limitations",
             "------------------------",
             interpretation["cautions"],
@@ -521,14 +682,41 @@ Uncertainty band: %s
             "-------------------",
             follow_up,
         ]
+
         figure_path = report.get('reconstruction_report_figure_path')
-        if figure_path:
+        radius_figure_paths = report.get("reconstruction_radius_report_figure_paths")
+        ordered = [
+            ("normal_30um", "30 µm"),
+            ("increased_50um", "50 µm"),
+            ("high_100um", "100 µm"),
+        ]
+        has_independent_radius_figures = bool(
+            isinstance(radius_figure_paths, dict)
+            and any(radius_figure_paths.get(key) for key, _ in ordered)
+        )
+        if figure_path and not has_independent_radius_figures:
             lines.extend([
                 "",
                 "Embedded Figure",
                 "---------------",
                 f"Saved figure path: {figure_path}",
             ])
+        if isinstance(radius_figure_paths, dict):
+            existing = [(label, radius_figure_paths.get(key)) for key, label in ordered if radius_figure_paths.get(key)]
+            if existing:
+                lines.extend([
+                    "",
+                    "Independent Radius Reconstructions",
+                    "-------------------------------",
+                ])
+                for label, artifact_value in existing:
+                    if isinstance(artifact_value, dict):
+                        for artifact_key in ["map_profile", "diagnostic_3d_prob", "po2_distribution"]:
+                            artifact_path = artifact_value.get(artifact_key)
+                            if artifact_path:
+                                lines.append(f"{label} [{artifact_key}]: {artifact_path}")
+                    else:
+                        lines.append(f"{label}: {artifact_value}")
         return "\n".join(lines) + "\n"
 
     def save_publication_report(self, report_text: str, path: str) -> None:
@@ -559,8 +747,16 @@ Uncertainty band: %s
 
             generated_pdf = os.path.splitext(tex_path)[0] + ".pdf"
             if result.returncode != 0 or not os.path.exists(generated_pdf):
-                details = (result.stderr or result.stdout or "Unknown LaTeX error").strip()
-                raise RuntimeError(f"PDF generation failed: {details}")
+                combined_output = "\n".join(
+                    chunk for chunk in (result.stdout, result.stderr) if chunk
+                ).strip()
+                details = combined_output or "Unknown LaTeX error"
+                log_tail = "\n".join(details.splitlines()[-25:])
+                raise RuntimeError(
+                    "PDF generation failed. Last LaTeX log lines:\n"
+                    f"{log_tail}\n\n"
+                    f"A .tex file was saved at: {tex_path}"
+                )
 
             if os.path.abspath(generated_pdf) != target_path:
                 shutil.move(generated_pdf, target_path)
@@ -602,9 +798,12 @@ Uncertainty band: %s
 
         for name, entry in gui.entries.items():
             if name in data:
-                entry.config(state="normal")
-                entry.delete(0, "end")
-                entry.insert(0, str(data[name]))
+                if isinstance(entry, ttk.Combobox):
+                    entry.set(str(data[name]))
+                else:
+                    entry.config(state="normal")
+                    entry.delete(0, "end")
+                    entry.insert(0, str(data[name]))
 
         if "include_axial_diffusion" in data:
             gui.include_axial_var.set(bool(data["include_axial_diffusion"]))

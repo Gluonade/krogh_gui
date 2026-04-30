@@ -67,6 +67,36 @@ source .venv/bin/activate
 python app.py
 ```
 
+## Synthetic validation
+
+A reusable synthetic validation runner is now included for controlled forward-plus-inverse checks using fictive but physiologically plausible cases. It generates case-wise CSV and JSON summaries in the `Diagnostic reports/` folder and is intended as the next practical validation step before harder real-world benchmarking.
+
+Run it with:
+
+```bash
+source .venv/bin/activate
+python run_synthetic_validation.py
+```
+
+A short user guide is also available in the project root:
+
+- [synthetic_validation_guide.pdf](synthetic_validation_guide.pdf)
+
+It explains expected runtime behaviour, when to wait versus intervene, where the result files are written, and how to interpret the validation outputs.
+
+## Reconstruction benchmark
+
+A reusable multi-case reconstruction benchmark is also available. It times several representative joint-fit scenarios and writes CSV and JSON summaries into the `Diagnostic reports/` folder.
+
+Run it with:
+
+```bash
+source .venv/bin/activate
+python run_reconstruction_benchmark.py
+```
+
+The benchmark is intended for practical before/after performance comparisons when the reconstruction search strategy or solver numerics change.
+
 ## Documentation
 
 The main documentation files are:
@@ -87,6 +117,13 @@ Recent verified changes include:
 - clinician-oriented interpretation text
 - explicit radius-conditioned alert explanation
 - corrected default diagnostic sensor value of 25 mmHg
+
+## Recommended next scientific priorities
+
+- formalize uncertainty intervals with bootstrap or profile-likelihood analysis
+- add practical identifiability checks for fitted parameters
+- evaluate a reduced Bayesian inverse mode for posterior mapping in the low-dimensional fit space
+- defer pulsatile forcing and explicit capillary-network models until time-resolved or morphometric data justify the extra complexity
 
 ## Intended use
 

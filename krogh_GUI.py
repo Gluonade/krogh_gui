@@ -13,6 +13,7 @@ import os
 import sys
 import threading
 import subprocess
+from datetime import datetime
 import tkinter as tk
 from contextlib import contextmanager
 from tkinter import ttk, messagebox, filedialog
@@ -34,6 +35,7 @@ from krogh_app.constants import (
     AXIAL_DIFFUSION_RELAX,
     AXIAL_DIFFUSION_TOL,
     BOHR_COEFF,
+    BOOTSTRAP_SAMPLES,
     CAPILLARY_ODE_ATOL,
     CAPILLARY_ODE_MAX_STEP,
     CAPILLARY_ODE_RTOL,
@@ -68,6 +70,7 @@ from krogh_app.constants import (
 from krogh_app.diagnostics import DiagnosticEngine
 from krogh_app.helptext import HelpTextBuilder
 from krogh_app.localization import TranslationManager
+from krogh_app.benchmarking import ReconstructionBenchmarkRunner, run_and_save_default_reconstruction_benchmark
 from krogh_app.persistence import CaseRepository
 from krogh_app.plotting import PlotManager, PlotWorkflowCoordinator
 from krogh_app.reconstruction import KroghReconstructor
@@ -100,7 +103,10 @@ SERIES_SWEEP_FIELDS = {
     "pCO2_mmHg": "pCO2",
     "Temp_C": "temp_c",
     "Perfusion_factor": "perf",
+    "Metabolic_rate_rel": "metabolic_rate_rel",
 }
+
+ALLOWED_TISSUE_RADIUS_UM = (30.0, 50.0, 100.0)
 
 # Physiologically plausible input ranges (non-blocking warnings only).
 # Values outside these bounds may occur only in extreme pathological conditions
@@ -112,6 +118,8 @@ PHYSIOLOGICAL_RANGES = {
     "pCO2_mmHg":        {"warn_low": 10.0,  "warn_high": 120.0},
     "Temp_C":           {"warn_low": 20.0,  "warn_high": 43.0},
     "Perfusion_factor": {"warn_low": 0.05,  "warn_high": 30.0},
+    "Metabolic_rate_rel": {"warn_low": 0.1,  "warn_high": 5.0},
+    "Tissue_radius_um": {"warn_low": 30.0,  "warn_high": 100.0},
 }
 
 SERIES_RESULT_FIELDS = {
@@ -146,6 +154,8 @@ INPUT_FIELD_LABELS = {
     "pCO2_mmHg": "field_pco2",
     "Temp_C": "field_temp",
     "Perfusion_factor": "field_perf",
+    "Metabolic_rate_rel": "field_metabolic_rate_rel",
+    "Tissue_radius_um": "field_tissue_radius_um",
     "High_PO2_threshold_1_mmHg": "field_high_po2_threshold_1",
     "High_PO2_threshold_2_mmHg": "field_high_po2_threshold_2",
     "High_PO2_additional_thresholds_mmHg": "field_high_po2_additional_thresholds",
@@ -210,9 +220,13 @@ TRANSLATIONS = {
         "save_diagnostic_report_button": "Save diagnostic report...",
         "save_publication_report_button": "Save English publication report...",
         "reconstruct_krogh_button": "Reconstruct Krogh Cylinder",
+        "run_reconstruction_benchmark_button": "Run reconstruction benchmark",
         "diag_krogh_computing": "Fitting Krogh model to diagnostic values...",
         "diag_krogh_ready": "Krogh reconstruction ready.",
         "diag_krogh_error": "ERROR in Krogh reconstruction: {error}",
+        "diag_benchmark_starting": "Starting reconstruction benchmark...",
+        "diag_benchmark_ready": "Reconstruction benchmark finished.",
+        "diag_benchmark_error": "ERROR in reconstruction benchmark: {error}",
         "diag_krogh_no_result": "Run diagnostic first before reconstructing.",
         "title_3d_diagnostic": "Krogh Cylinder — {state}\nAlert: {alert} | Risk: {risk:.3f} | Confidence: {conf:.3f}\nPO2_inlet={P_inlet:.1f} | pH={pH:.2f} | pCO2={pCO2:.1f} | T={temp_c:.1f}°C\nFitted P_half={P_half:.2f} mmHg | P_venous={p_venous:.1f} | P_tis_min={p_tis_min:.2f} | SensorAvg={sensor_avg:.1f} mmHg",
         "diag_krogh_fit_info": "Fitted mitoP50={P_half:.3f} mmHg to match sensor_po2={sensor_target:.1f} mmHg (simulated={sensor_sim:.1f} mmHg)",
@@ -229,6 +243,7 @@ TRANSLATIONS = {
         "diag_ph": "pH",
         "diag_temp": "Temperature (C)",
         "diag_sensor_po2": "Sensor po2 (mmHg)",
+        "diag_metabolic_rate_rel": "Relative tissue O2 consumption (x baseline)",
         "diag_hemoglobin": "Hemoglobin (g/dL, optional)",
         "diag_venous_sat": "Venous saturation (%, optional)",
         "diag_optional_hint": "Note: Hemoglobin and venous saturation are optional. Leave blank to use defaults.",
@@ -250,6 +265,10 @@ TRANSLATIONS = {
         "field_pco2": "pCO2_mmHg",
         "field_temp": "Temp_C",
         "field_perf": "Perfusion_factor",
+        "field_metabolic_rate_rel": "Relative tissue O2 consumption (x baseline)",
+        "field_tissue_radius_um": "Tissue_radius_um",
+        "field_tissue_radius_um": "Tissue radius (µm)",
+        "field_tissue_radius_um": "Geweberadius (µm)",
         "field_high_po2_threshold_1": "High_PO2_threshold_1_mmHg",
         "field_high_po2_threshold_2": "High_PO2_threshold_2_mmHg",
         "field_high_po2_additional_thresholds": "Additional_high_PO2_thresholds_mmHg (comma-separated)",
@@ -396,6 +415,7 @@ TRANSLATIONS = {
         "numeric_axial_diffusion_tol": "Tolerance for tissue diffusion",
         "numeric_axial_coupling_max_iter": "Max iterations for capillary-tissue coupling",
         "numeric_axial_coupling_tol": "Tolerance for capillary-tissue coupling",
+        "numeric_bootstrap_samples": "Bootstrap refits for uncertainty band",
         "series_check_header": "Numerics check on {count} sampled cases:",
         "series_check_field": "  {field}: max |delta|={abs_diff:.4g}, rel={rel_diff:.3%}, worst case #{case}",
         "series_check_ok": "  No suspicious sensitivity detected with tighter solver settings.",
@@ -455,9 +475,13 @@ TRANSLATIONS = {
         "save_diagnostic_report_button": "Diagnostikbericht speichern...",
         "save_publication_report_button": "Englischen Publikationsbericht speichern...",
         "reconstruct_krogh_button": "Krogh-Zylinder rekonstruieren",
+        "run_reconstruction_benchmark_button": "Rekonstruktions-Benchmark starten",
         "diag_krogh_computing": "Krogh-Modell wird an Diagnostik-Werte angepasst...",
         "diag_krogh_ready": "Krogh-Rekonstruktion bereit.",
         "diag_krogh_error": "FEHLER bei Krogh-Rekonstruktion: {error}",
+        "diag_benchmark_starting": "Rekonstruktions-Benchmark wird gestartet...",
+        "diag_benchmark_ready": "Rekonstruktions-Benchmark abgeschlossen.",
+        "diag_benchmark_error": "FEHLER im Rekonstruktions-Benchmark: {error}",
         "diag_krogh_no_result": "Zuerst Diagnostik ausfuehren, dann rekonstruieren.",
         "title_3d_diagnostic": "Krogh-Zylinder — {state}\nAlarm: {alert} | Risiko: {risk:.3f} | Konfidenz: {conf:.3f}\nPO2_inlet={P_inlet:.1f} | pH={pH:.2f} | pCO2={pCO2:.1f} | T={temp_c:.1f}°C\ngepasstes P_half={P_half:.2f} mmHg | P_venous={p_venous:.1f} | P_tis_min={p_tis_min:.2f} | SensorMittel={sensor_avg:.1f} mmHg",
         "diag_krogh_fit_info": "Angepasstes mitoP50={P_half:.3f} mmHg fuer sensor_po2={sensor_target:.1f} mmHg (simuliert={sensor_sim:.1f} mmHg)",
@@ -474,6 +498,7 @@ TRANSLATIONS = {
         "diag_ph": "pH",
         "diag_temp": "Temperatur (C)",
         "diag_sensor_po2": "Sensor po2 (mmHg)",
+        "diag_metabolic_rate_rel": "Relativer Gewebe-O2-Verbrauch (x Basis)",
         "diag_hemoglobin": "Haemoglobin (g/dL, optional)",
         "diag_venous_sat": "Venoese Saettigung (%, optional)",
         "diag_optional_hint": "Hinweis: Haemoglobin und venoese Saettigung sind optional. Leer lassen fuer Standards.",
@@ -495,6 +520,7 @@ TRANSLATIONS = {
         "field_pco2": "pCO2_mmHg",
         "field_temp": "Temp_C",
         "field_perf": "Perfusion_factor",
+        "field_metabolic_rate_rel": "Relativer Gewebe-O2-Verbrauch (x Basis)",
         "field_high_po2_threshold_1": "Hoher_PO2_Schwellenwert_1_mmHg",
         "field_high_po2_threshold_2": "Hoher_PO2_Schwellenwert_2_mmHg",
         "field_high_po2_additional_thresholds": "Zusaetzliche_hohe_PO2_Schwellen_mmHg (kommagetrennt)",
@@ -641,6 +667,7 @@ TRANSLATIONS = {
         "numeric_axial_diffusion_tol": "Toleranz fuer Gewebediffusion",
         "numeric_axial_coupling_max_iter": "Maximale Iterationen fuer Kapillar-Gewebe-Kopplung",
         "numeric_axial_coupling_tol": "Toleranz fuer Kapillar-Gewebe-Kopplung",
+        "numeric_bootstrap_samples": "Bootstrap-Refits fuer Unsicherheitsband",
         "series_check_header": "Numerik-Check mit {count} Stichprobenfaellen:",
         "series_check_field": "  {field}: max |Delta|={abs_diff:.4g}, rel={rel_diff:.3%}, schlechtester Fall #{case}",
         "series_check_ok": "  Keine auffaellige Sensitivitaet mit strengeren Solver-Einstellungen erkannt.",
@@ -682,6 +709,7 @@ TRANSLATIONS = {
         "field_pco2": "pCO2_mmHg",
         "field_temp": "Temp_C",
         "field_perf": "Perfusion_factor",
+        "field_metabolic_rate_rel": "Consommation relative d'O2 tissulaire (x base)",
         "field_high_po2_threshold_1": "Seuil_haute_PO2_1_mmHg",
         "field_high_po2_threshold_2": "Seuil_haute_PO2_2_mmHg",
         "field_high_po2_additional_thresholds": "Seuils_additionnels_haute_PO2_mmHg (separes par virgules)",
@@ -799,9 +827,13 @@ TRANSLATIONS = {
         "save_diagnostic_report_button": "Enregistrer rapport diagnostique...",
         "save_publication_report_button": "Enregistrer rapport scientifique en anglais...",
         "reconstruct_krogh_button": "Reconstruire cylindre de Krogh",
+        "run_reconstruction_benchmark_button": "Lancer benchmark de reconstruction",
         "diag_krogh_computing": "Ajustement du modele de Krogh aux valeurs diagnostiques...",
         "diag_krogh_ready": "Reconstruction de Krogh prete.",
         "diag_krogh_error": "ERREUR reconstruction Krogh : {error}",
+        "diag_benchmark_starting": "Demarrage du benchmark de reconstruction...",
+        "diag_benchmark_ready": "Benchmark de reconstruction termine.",
+        "diag_benchmark_error": "ERREUR benchmark de reconstruction : {error}",
         "diag_krogh_no_result": "Executer d'abord le diagnostic avant de reconstruire.",
         "title_3d_diagnostic": "Cylindre de Krogh — {state}\nAlerte: {alert} | Risque: {risk:.3f} | Confiance: {conf:.3f}\nPO2_inlet={P_inlet:.1f} | pH={pH:.2f} | pCO2={pCO2:.1f} | T={temp_c:.1f}°C\nP_half ajuste={P_half:.2f} mmHg | P_venous={p_venous:.1f} | P_tis_min={p_tis_min:.2f} | MoyCapteur={sensor_avg:.1f} mmHg",
         "diag_krogh_fit_info": "P_half ajuste={P_half:.3f} mmHg pour sensor_po2={sensor_target:.1f} mmHg (simule={sensor_sim:.1f} mmHg)",
@@ -857,6 +889,7 @@ TRANSLATIONS = {
         "field_pco2": "pCO2_mmHg",
         "field_temp": "Temp_C",
         "field_perf": "Perfusion_factor",
+        "field_metabolic_rate_rel": "Consumo relativo di O2 tissutale (x base)",
         "field_high_po2_threshold_1": "Soglia_PO2_alta_1_mmHg",
         "field_high_po2_threshold_2": "Soglia_PO2_alta_2_mmHg",
         "field_high_po2_additional_thresholds": "Soglie_ulteriori_PO2_alta_mmHg (separate da virgole)",
@@ -975,6 +1008,7 @@ TRANSLATIONS = {
         "diag_ph": "pH",
         "diag_temp": "Temperatura (C)",
         "diag_sensor_po2": "Sensore po2 (mmHg)",
+        "diag_metabolic_rate_rel": "Consommation relative d'O2 tissulaire (x base)",
         "diag_hemoglobin": "Emoglobina (g/dL, opzionale)",
         "diag_venous_sat": "Saturazione venosa (%, opzionale)",
         "diag_optional_hint": "Nota: l'emoglobina e la saturazione venosa sono opzionali. Lascia vuoto per usare i valori predefiniti.",
@@ -995,9 +1029,13 @@ TRANSLATIONS = {
         "save_diagnostic_report_button": "Salva report diagnostico...",
         "save_publication_report_button": "Salva report scientifico in inglese...",
         "reconstruct_krogh_button": "Ricostruisci cilindro di Krogh",
+        "run_reconstruction_benchmark_button": "Esegui benchmark ricostruzione",
         "diag_krogh_computing": "Adattamento modello di Krogh ai valori diagnostici...",
         "diag_krogh_ready": "Ricostruzione di Krogh pronta.",
         "diag_krogh_error": "ERRORE nella ricostruzione di Krogh: {error}",
+        "diag_benchmark_starting": "Avvio benchmark di ricostruzione...",
+        "diag_benchmark_ready": "Benchmark di ricostruzione completato.",
+        "diag_benchmark_error": "ERRORE nel benchmark di ricostruzione: {error}",
         "diag_krogh_no_result": "Eseguire prima la diagnostica prima di ricostruire.",
         "title_3d_diagnostic": "Cilindro di Krogh — {state}\nAllarme: {alert} | Rischio: {risk:.3f} | Confidenza: {conf:.3f}\nPO2_inlet={P_inlet:.1f} | pH={pH:.2f} | pCO2={pCO2:.1f} | T={temp_c:.1f}°C\nP_half adattato={P_half:.2f} mmHg | P_venous={p_venous:.1f} | P_tis_min={p_tis_min:.2f} | MediaSensore={sensor_avg:.1f} mmHg",
         "diag_krogh_fit_info": "P_half adattato={P_half:.3f} mmHg per sensor_po2={sensor_target:.1f} mmHg (simulato={sensor_sim:.1f} mmHg)",
@@ -1032,6 +1070,7 @@ TRANSLATIONS = {
         "field_pco2": "pCO2_mmHg",
         "field_temp": "Temp_C",
         "field_perf": "Perfusion_factor",
+        "field_metabolic_rate_rel": "Consumo relativo de O2 tisular (x basal)",
         "field_high_po2_threshold_1": "Umbral_PO2_alto_1_mmHg",
         "field_high_po2_threshold_2": "Umbral_PO2_alto_2_mmHg",
         "field_high_po2_additional_thresholds": "Umbrales_adicionales_PO2_alto_mmHg (separados por comas)",
@@ -1149,9 +1188,13 @@ TRANSLATIONS = {
         "save_diagnostic_report_button": "Guardar informe diagnostico...",
         "save_publication_report_button": "Guardar informe cientifico en ingles...",
         "reconstruct_krogh_button": "Reconstruir cilindro de Krogh",
+        "run_reconstruction_benchmark_button": "Ejecutar benchmark de reconstruccion",
         "diag_krogh_computing": "Ajustando modelo de Krogh a los valores diagnosticos...",
         "diag_krogh_ready": "Reconstruccion de Krogh lista.",
         "diag_krogh_error": "ERROR en reconstruccion de Krogh: {error}",
+        "diag_benchmark_starting": "Iniciando benchmark de reconstruccion...",
+        "diag_benchmark_ready": "Benchmark de reconstruccion finalizado.",
+        "diag_benchmark_error": "ERROR en benchmark de reconstruccion: {error}",
         "diag_krogh_no_result": "Ejecutar primero el diagnostico antes de reconstruir.",
         "title_3d_diagnostic": "Cilindro de Krogh — {state}\nAlerta: {alert} | Riesgo: {risk:.3f} | Confianza: {conf:.3f}\nPO2_inlet={P_inlet:.1f} | pH={pH:.2f} | pCO2={pCO2:.1f} | T={temp_c:.1f}°C\nP_half ajustado={P_half:.2f} mmHg | P_venous={p_venous:.1f} | P_tis_min={p_tis_min:.2f} | PromSensor={sensor_avg:.1f} mmHg",
         "diag_krogh_fit_info": "P_half ajustado={P_half:.3f} mmHg para sensor_po2={sensor_target:.1f} mmHg (simulado={sensor_sim:.1f} mmHg)",
@@ -1161,6 +1204,8 @@ TRANSLATIONS = {
         "diag_ph": "pH",
         "diag_temp": "Temperatura (C)",
         "diag_sensor_po2": "Sensor po2 (mmHg)",
+        "diag_metabolic_rate_rel": "Consumo relativo di O2 tissutale (x base)",
+        "diag_metabolic_rate_rel": "Consumo relativo de O2 tisular (x basal)",
         "diag_hemoglobin": "Hemoglobina (g/dL, opcional)",
         "diag_venous_sat": "Saturacion venosa (%, opcional)",
         "diag_optional_hint": "Nota: la hemoglobina y saturacion venosa son opcionales. Dejar en blanco para usar valores por defecto.",
@@ -1195,13 +1240,14 @@ def get_numeric_settings():
         axial_diffusion_tol=float(AXIAL_DIFFUSION_TOL),
         axial_coupling_max_iter=int(AXIAL_COUPLING_MAX_ITER),
         axial_coupling_tol=float(AXIAL_COUPLING_TOL),
+        bootstrap_samples=int(BOOTSTRAP_SAMPLES),
     ).to_dict()
 
 
 def apply_numeric_settings(settings):
     global CAPILLARY_ODE_RTOL, CAPILLARY_ODE_ATOL, CAPILLARY_ODE_MAX_STEP
     global AXIAL_DIFFUSION_MAX_ITER, AXIAL_DIFFUSION_TOL
-    global AXIAL_COUPLING_MAX_ITER, AXIAL_COUPLING_TOL
+    global AXIAL_COUPLING_MAX_ITER, AXIAL_COUPLING_TOL, BOOTSTRAP_SAMPLES
 
     CAPILLARY_ODE_RTOL = max(float(settings["ode_rtol"]), 1e-14)
     CAPILLARY_ODE_ATOL = max(float(settings["ode_atol"]), 1e-16)
@@ -1210,6 +1256,7 @@ def apply_numeric_settings(settings):
     AXIAL_DIFFUSION_TOL = max(float(settings["axial_diffusion_tol"]), 1e-14)
     AXIAL_COUPLING_MAX_ITER = max(int(settings["axial_coupling_max_iter"]), 1)
     AXIAL_COUPLING_TOL = max(float(settings["axial_coupling_tol"]), 1e-14)
+    BOOTSTRAP_SAMPLES = max(int(settings.get("bootstrap_samples", BOOTSTRAP_SAMPLES)), 1)
 
 
 @contextmanager
@@ -1231,6 +1278,20 @@ def build_tighter_numeric_settings(base_settings):
         "axial_diffusion_tol": max(float(base_settings["axial_diffusion_tol"]) * 0.1, 1e-12),
         "axial_coupling_max_iter": max(int(base_settings["axial_coupling_max_iter"]) * 2, int(base_settings["axial_coupling_max_iter"]) + 4),
         "axial_coupling_tol": max(float(base_settings["axial_coupling_tol"]) * 0.1, 1e-12),
+        "bootstrap_samples": int(base_settings.get("bootstrap_samples", BOOTSTRAP_SAMPLES)),
+    }
+
+
+def build_fast_numeric_settings(base_settings):
+    return {
+        "ode_rtol": min(max(float(base_settings["ode_rtol"]) * 25.0, 1e-10), 1e-4),
+        "ode_atol": min(max(float(base_settings["ode_atol"]) * 25.0, 1e-12), 1e-6),
+        "ode_max_step": max(float(base_settings["ode_max_step"]) * 1.5, 1e-6),
+        "axial_diffusion_max_iter": max(20, int(round(int(base_settings["axial_diffusion_max_iter"]) * 0.35))),
+        "axial_diffusion_tol": min(max(float(base_settings["axial_diffusion_tol"]) * 30.0, 1e-10), 1e-2),
+        "axial_coupling_max_iter": max(2, int(round(int(base_settings["axial_coupling_max_iter"]) * 0.5))),
+        "axial_coupling_tol": min(max(float(base_settings["axial_coupling_tol"]) * 30.0, 1e-10), 1e-2),
+        "bootstrap_samples": int(base_settings.get("bootstrap_samples", BOOTSTRAP_SAMPLES)),
     }
 
 
@@ -1277,15 +1338,16 @@ def michaelis_menten_consumption(P_local, P_half, M_max=M_rate):
     return M_max * (MIN_CONSUMPTION_FRACTION + (1.0 - MIN_CONSUMPTION_FRACTION) * saturation)
 
 
-def effective_consumption_from_capillary_po2(P_c, P_half, max_iter=30, tol=1e-7):
+def effective_consumption_from_capillary_po2(P_c, P_half, metabolic_rate_rel=1.0, max_iter=30, tol=1e-7):
     P_c_safe = float(max(P_c, 0.0))
-    M_eff = M_rate
+    M_base = max(float(metabolic_rate_rel), 1e-6) * M_rate
+    M_eff = M_base
 
     for _ in range(max_iter):
         profile = krogh_erlang(r_vec, P_c_safe, M_eff, K_diff, R_cap, R_tis)
         profile = np.maximum(profile, 0.0)
         p_mean = np.average(profile, weights=radial_weights)
-        M_new = float(michaelis_menten_consumption(p_mean, P_half=P_half))
+        M_new = float(michaelis_menten_consumption(p_mean, P_half=P_half, M_max=M_base))
         if abs(M_new - M_eff) < tol:
             M_eff = M_new
             break
@@ -1310,18 +1372,22 @@ def solve_capillary_profile(dPc_dz, P_inlet):
     return np.maximum(sol.y[0], 0.0)
 
 
-def solve_initial_capillary_po2(P_inlet, P_half, p50_eff, perfusion_factor=1.0):
+def solve_initial_capillary_po2(P_inlet, P_half, p50_eff, perfusion_factor=1.0, metabolic_rate_rel=1.0):
     q_flow_local = max(float(perfusion_factor) * Q_flow, 1e-12)
 
     def dPc_dz(_, Pc):
-        M_eff = effective_consumption_from_capillary_po2(Pc[0], P_half=P_half)
+        M_eff = effective_consumption_from_capillary_po2(
+            Pc[0],
+            P_half=P_half,
+            metabolic_rate_rel=metabolic_rate_rel,
+        )
         consumption_per_length = M_eff * np.pi * R_tis**2
         return [-consumption_per_length / (q_flow_local * dC_dP(Pc[0], p50_eff=p50_eff))]
 
     return solve_capillary_profile(dPc_dz, P_inlet)
 
 
-def solve_tissue_field_with_axial_diffusion(P_c_axial, P_half, initial_guess=None):
+def solve_tissue_field_with_axial_diffusion(P_c_axial, P_half, metabolic_rate_rel=1.0, initial_guess=None):
     a_plus = K_diff * (1.0 / dr**2 + 1.0 / (2.0 * r_vec[1:-1] * dr))
     a_minus = K_diff * (1.0 / dr**2 - 1.0 / (2.0 * r_vec[1:-1] * dr))
     a_z = K_diff / dz**2
@@ -1329,7 +1395,14 @@ def solve_tissue_field_with_axial_diffusion(P_c_axial, P_half, initial_guess=Non
 
     if initial_guess is None:
         M_eff_init = np.array(
-            [effective_consumption_from_capillary_po2(Pc, P_half=P_half) for Pc in P_c_axial],
+            [
+                effective_consumption_from_capillary_po2(
+                    Pc,
+                    P_half=P_half,
+                    metabolic_rate_rel=metabolic_rate_rel,
+                )
+                for Pc in P_c_axial
+            ],
             dtype=float,
         )
         P = np.zeros((NZ, NR), dtype=float)
@@ -1343,7 +1416,11 @@ def solve_tissue_field_with_axial_diffusion(P_c_axial, P_half, initial_guess=Non
 
     for _ in range(AXIAL_DIFFUSION_MAX_ITER):
         P_old = P.copy()
-        M_old = michaelis_menten_consumption(P_old[1:-1, 1:-1], P_half=P_half)
+        M_old = michaelis_menten_consumption(
+            P_old[1:-1, 1:-1],
+            P_half=P_half,
+            M_max=max(float(metabolic_rate_rel), 1e-6) * M_rate,
+        )
         P_new_inner = (
             a_plus[None, :] * P_old[1:-1, 2:]
             + a_minus[None, :] * P_old[1:-1, :-2]
@@ -1370,14 +1447,34 @@ def solve_tissue_field_with_axial_diffusion(P_c_axial, P_half, initial_guess=Non
     return np.maximum(P, 0.0)
 
 
-def solve_axial_capillary_po2(P_inlet, P_half, p50_eff, include_axial_diffusion=True, perfusion_factor=1.0):
+def solve_axial_capillary_po2(
+    P_inlet,
+    P_half,
+    p50_eff,
+    include_axial_diffusion=True,
+    perfusion_factor=1.0,
+    metabolic_rate_rel=1.0,
+):
     q_flow_local = max(float(perfusion_factor) * Q_flow, 1e-12)
-    P_c_axial = solve_initial_capillary_po2(P_inlet, P_half, p50_eff=p50_eff, perfusion_factor=perfusion_factor)
+    P_c_axial = solve_initial_capillary_po2(
+        P_inlet,
+        P_half,
+        p50_eff=p50_eff,
+        perfusion_factor=perfusion_factor,
+        metabolic_rate_rel=metabolic_rate_rel,
+    )
     tissue_po2 = None
 
     if not include_axial_diffusion:
         M_eff_axial = np.array(
-            [effective_consumption_from_capillary_po2(Pc, P_half=P_half) for Pc in P_c_axial],
+            [
+                effective_consumption_from_capillary_po2(
+                    Pc,
+                    P_half=P_half,
+                    metabolic_rate_rel=metabolic_rate_rel,
+                )
+                for Pc in P_c_axial
+            ],
             dtype=float,
         )
         tissue_po2 = np.zeros((NZ, NR), dtype=float)
@@ -1386,9 +1483,18 @@ def solve_axial_capillary_po2(P_inlet, P_half, p50_eff, include_axial_diffusion=
         return P_c_axial, np.maximum(tissue_po2, 0.0), M_eff_axial
 
     for _ in range(AXIAL_COUPLING_MAX_ITER):
-        tissue_po2 = solve_tissue_field_with_axial_diffusion(P_c_axial, P_half, initial_guess=tissue_po2)
+        tissue_po2 = solve_tissue_field_with_axial_diffusion(
+            P_c_axial,
+            P_half,
+            metabolic_rate_rel=metabolic_rate_rel,
+            initial_guess=tissue_po2,
+        )
         M_slice = np.average(
-            michaelis_menten_consumption(tissue_po2, P_half=P_half),
+            michaelis_menten_consumption(
+                tissue_po2,
+                P_half=P_half,
+                M_max=max(float(metabolic_rate_rel), 1e-6) * M_rate,
+            ),
             axis=1,
             weights=radial_weights,
         )
@@ -1404,9 +1510,18 @@ def solve_axial_capillary_po2(P_inlet, P_half, p50_eff, include_axial_diffusion=
             break
         P_c_axial = P_new
 
-    tissue_po2 = solve_tissue_field_with_axial_diffusion(P_c_axial, P_half, initial_guess=tissue_po2)
+    tissue_po2 = solve_tissue_field_with_axial_diffusion(
+        P_c_axial,
+        P_half,
+        metabolic_rate_rel=metabolic_rate_rel,
+        initial_guess=tissue_po2,
+    )
     M_eff_axial = np.average(
-        michaelis_menten_consumption(tissue_po2, P_half=P_half),
+        michaelis_menten_consumption(
+            tissue_po2,
+            P_half=P_half,
+            M_max=max(float(metabolic_rate_rel), 1e-6) * M_rate,
+        ),
         axis=1,
         weights=radial_weights,
     )
@@ -1421,6 +1536,7 @@ def run_single_case(
     temp_c,
     perfusion_factor,
     include_axial_diffusion,
+    metabolic_rate_rel=1.0,
     high_po2_threshold_primary=100.0,
     high_po2_threshold_secondary=200.0,
     additional_high_po2_thresholds=None,
@@ -1434,6 +1550,7 @@ def run_single_case(
         p50_eff=p50_eff,
         include_axial_diffusion=include_axial_diffusion,
         perfusion_factor=perfusion_factor,
+        metabolic_rate_rel=metabolic_rate_rel,
     )
 
     tissue_field = np.maximum(PO2, 0.0)
@@ -1626,6 +1743,9 @@ class KroghGUI(tk.Tk):
             R_cap=R_cap,
             R_tis=R_tis,
             L_cap=L_cap,
+            get_numeric_settings=get_numeric_settings,
+            temporary_numeric_settings=temporary_numeric_settings,
+            build_fast_numeric_settings=build_fast_numeric_settings,
         )
         self.series_runner = _get_series_runner()
 
@@ -1644,6 +1764,7 @@ class KroghGUI(tk.Tk):
         self.series_param2_key = "Perfusion_factor"
         self.diagnostic_radius_mode_var = tk.StringVar(value="all variants")
         self.diagnostic_radius_variant_var = tk.StringVar(value="100 µm")
+        self.auto_save_radius_plots_var = tk.BooleanVar(value=True)
 
         self._build_ui()
 
@@ -1689,6 +1810,564 @@ class KroghGUI(tk.Tk):
                 parts.append(f"{float(scenario.get('radius_um', 0.0)):.0f} µm={scenario.get('alert_level', 'unknown')}")
         base_summary = plot_data.get("radius_sensitivity_summary", "")
         return f"Radius-conditioned alerts: {' | '.join(parts)}. {base_summary}".strip()
+
+    def _build_reconstructor_for_current_geometry(self):
+        return KroghReconstructor(
+            solve_axial_capillary_po2=solve_axial_capillary_po2,
+            effective_p50=effective_p50,
+            radial_weights=radial_weights,
+            r_vec=r_vec,
+            z_eval=z_eval,
+            R_cap=R_cap,
+            R_tis=R_tis,
+            L_cap=L_cap,
+            get_numeric_settings=get_numeric_settings,
+            temporary_numeric_settings=temporary_numeric_settings,
+            build_fast_numeric_settings=build_fast_numeric_settings,
+        )
+
+    @contextmanager
+    def _temporary_radius_geometry(self, radius_um: float):
+        global R_tis, r_vec, dr, radial_weights
+
+        prev_r_tis = float(R_tis)
+        prev_r_vec = np.array(r_vec, dtype=float, copy=True)
+        prev_dr = float(dr)
+        prev_radial_weights = np.array(radial_weights, dtype=float, copy=True)
+        try:
+            R_tis = max(float(R_cap), float(radius_um) * 1e-4)
+            r_vec = np.linspace(float(R_cap), float(R_tis), int(NR))
+            dr = max((float(R_tis) - float(R_cap)) / max(int(NR) - 1, 1), 1e-12)
+            radial_weights = r_vec / np.sum(r_vec * dr)
+            yield
+        finally:
+            R_tis = prev_r_tis
+            r_vec = prev_r_vec
+            dr = prev_dr
+            radial_weights = prev_radial_weights
+
+    def _classify_radius_alert_from_metrics(self, sensor_avg, below_1, below_5, below_10, below_15):
+        below_1 = float(below_1)
+        below_5 = float(below_5)
+        below_10 = float(below_10)
+        below_15 = float(below_15)
+
+        if below_1 > 0.01 or below_5 >= 0.10 or below_10 >= 0.35:
+            return "red", "serious risk of severe hypoxia"
+        if below_5 >= 0.03 or below_10 >= 0.20:
+            return "orange", "high probability of major hypoxic spots"
+        if below_10 >= 0.05 or below_15 >= 0.30:
+            return "yellow", "increased alert with a relevant hidden hypoxic burden"
+        return "green", "no major hidden hypoxic burden suggested under this radius assumption"
+
+    def _build_radius_refit_scenarios(
+        self,
+        *,
+        po2,
+        pco2,
+        ph,
+        temperature_c,
+        venous_sat,
+        P_v_target,
+        venous_weight,
+        sensor_po2,
+        metabolic_rate_rel,
+        diag_result,
+        numeric_settings,
+    ):
+        scenario_defs = (
+            ("normal_30um", "normal", 30.0),
+            ("increased_50um", "increased", 50.0),
+            ("high_100um", "high", 100.0),
+        )
+        scenarios = {}
+        plot_data_by_key = {}
+
+        for key, label, radius_um in scenario_defs:
+            try:
+                with self._temporary_radius_geometry(radius_um):
+                    reconstructor = self._build_reconstructor_for_current_geometry()
+                    with temporary_numeric_settings(numeric_settings):
+                        fit = reconstructor.fit_joint_parameters(
+                            P_inlet=po2,
+                            sensor_target=sensor_po2,
+                            P_v_target=P_v_target,
+                            pH=ph,
+                            pCO2=pco2,
+                            temp_c=temperature_c,
+                            metabolic_target=metabolic_rate_rel,
+                            fit_metabolic=True,
+                            p_half_bounds=(0.1, 5.0),
+                            include_axial=True,
+                            venous_weight=venous_weight,
+                            bootstrap_samples=0,
+                        )
+                    plot_data = reconstructor.build_plot_data(
+                        po2=po2,
+                        pco2=pco2,
+                        ph=ph,
+                        temperature_c=temperature_c,
+                        venous_sat=venous_sat,
+                        P_v_target=P_v_target,
+                        venous_weight=venous_weight,
+                        sensor_po2=sensor_po2,
+                        diag_result=diag_result,
+                        fit=fit,
+                    )
+                hypoxic = dict(plot_data.get("hypoxic_fraction_map", {}))
+                scenario = {
+                    "label": label,
+                    "radius_um": float(radius_um),
+                    "sensor_avg": float(plot_data.get("sensor_avg", float("nan"))),
+                    "fraction_below_1": float(hypoxic.get("below_1", 0.0)),
+                    "fraction_below_5": float(hypoxic.get("below_5", 0.0)),
+                    "fraction_below_10": float(hypoxic.get("below_10", 0.0)),
+                    "fraction_below_15": float(hypoxic.get("below_15", 0.0)),
+                    "P_half_fit": float(plot_data.get("P_half_fit", float("nan"))),
+                    "perfusion_factor": float(plot_data.get("perfusion_factor", float("nan"))),
+                    "metabolic_rate_rel": float(plot_data.get("metabolic_rate_rel", float("nan"))),
+                }
+                scenario["alert_level"], scenario["interpretation"] = self._classify_radius_alert_from_metrics(
+                    scenario["sensor_avg"],
+                    scenario["fraction_below_1"],
+                    scenario["fraction_below_5"],
+                    scenario["fraction_below_10"],
+                    scenario["fraction_below_15"],
+                )
+                scenarios[key] = scenario
+                plot_data_by_key[key] = plot_data
+            except Exception as exc:
+                scenarios[key] = {
+                    "label": label,
+                    "radius_um": float(radius_um),
+                    "alert_level": "unknown",
+                    "interpretation": f"radius-specific refit failed: {exc}",
+                }
+
+        if not scenarios:
+            return {}, "", {}
+
+        summary = (
+            "Radius sensitivity from separate reconstruction refits: "
+            f"30 µm -> {scenarios.get('normal_30um', {}).get('alert_level', 'unknown')}; "
+            f"50 µm -> {scenarios.get('increased_50um', {}).get('alert_level', 'unknown')}; "
+            f"100 µm -> {scenarios.get('high_100um', {}).get('alert_level', 'unknown')}."
+        )
+        return scenarios, summary, plot_data_by_key
+
+    def _render_radius_reconstruction_figure(self, plot_data, radius_um, alert_level):
+        fig, (ax_map, ax_profile) = plt.subplots(1, 2, figsize=(12.5, 4.8))
+
+        x_um = np.asarray(plot_data["X_sym"][0, :], dtype=float) * 1e4
+        z_rel = np.asarray(plot_data["Z_rel"][:, 0], dtype=float)
+        po2_field = np.asarray(plot_data["PO2_sym"], dtype=float)
+        vmax = max(float(np.max(po2_field)), float(plot_data.get("po2_max_plot", 30.0)), 30.0)
+
+        mesh = ax_map.imshow(
+            po2_field,
+            origin="lower",
+            aspect="auto",
+            extent=[float(np.min(x_um)), float(np.max(x_um)), float(np.min(z_rel)), float(np.max(z_rel))],
+            cmap="turbo",
+            vmin=0.0,
+            vmax=vmax,
+        )
+        fig.colorbar(mesh, ax=ax_map, pad=0.02, label="PO2 (mmHg)")
+        ax_map.set_xlabel("Radial position (µm)")
+        ax_map.set_ylabel("Relative capillary length")
+        ax_map.set_title(f"Krogh cylinder PO2 map ({radius_um:.0f} µm) | alert: {alert_level}")
+
+        z_axis = np.asarray(z_eval, dtype=float) / float(L_cap)
+        ax_profile.plot(z_axis, np.asarray(plot_data["P_avg"], dtype=float), "r-", lw=2.2, label="tissue mean PO2")
+        ax_profile.plot(z_axis, np.asarray(plot_data["P_c_axial"], dtype=float), "k-", lw=1.6, label="capillary PO2")
+        ax_profile.axhline(10.0, color="#cc3d3d", linestyle="--", lw=1.0, label="10 mmHg")
+        ax_profile.set_xlabel("Relative capillary length")
+        ax_profile.set_ylabel("PO2 (mmHg)")
+        ax_profile.set_title(
+            f"fit: perf={float(plot_data.get('perfusion_factor', float('nan'))):.2f}x | "
+            f"met={float(plot_data.get('metabolic_rate_rel', float('nan'))):.2f}x | "
+            f"mitoP50={float(plot_data.get('P_half_fit', float('nan'))):.2f} mmHg"
+        )
+        ax_profile.grid(alpha=0.25)
+        ax_profile.legend(fontsize=8, loc="best")
+
+        fig.tight_layout()
+        return fig
+
+    def _state_probability_entries(self, diag_result):
+        diag_result = dict(diag_result or {})
+
+        def _prob(primary_key, fallback_key=None):
+            raw = diag_result.get(primary_key)
+            if raw is None and fallback_key is not None:
+                raw = diag_result.get(fallback_key)
+            try:
+                return float(raw)
+            except (TypeError, ValueError):
+                return 0.0
+
+        entries = [
+            (
+                "normoxia",
+                "Normoxia (>40 mmHg)",
+                _prob("p_normoxia"),
+            ),
+            (
+                "intermediate_oxygenation",
+                "Intermediate (40-20 mmHg)",
+                _prob("p_intermediate_oxygenation", "p_mild_hypoxia"),
+            ),
+            (
+                "low_oxygenation_approaching_critical",
+                "Low O2 (20-10 mmHg)",
+                _prob("p_low_oxygenation_approaching_critical", "p_compensated_hypoxia"),
+            ),
+            (
+                "hypoxia",
+                "Hypoxia (<10 mmHg)",
+                _prob("p_hypoxia", "p_severe_hypoxia"),
+            ),
+            (
+                "profound_hypoxia",
+                "Profound (<2 mmHg)",
+                _prob("p_profound_hypoxia"),
+            ),
+        ]
+        return entries
+
+    def _radius_probability_profile(self, scenario, diag_result):
+        base = dict(diag_result or {})
+        if not isinstance(scenario, dict):
+            return base
+
+        alert = str(scenario.get("alert_level", "") or "").strip().lower()
+        sensor_avg = float(scenario.get("sensor_avg", 0.0) or 0.0)
+        below_1 = float(scenario.get("fraction_below_1", 0.0) or 0.0)
+        below_5 = float(scenario.get("fraction_below_5", 0.0) or 0.0)
+        below_10 = float(scenario.get("fraction_below_10", 0.0) or 0.0)
+
+        base_vectors = {
+            "green": {
+                "p_normoxia": 0.68,
+                "p_intermediate_oxygenation": 0.22,
+                "p_low_oxygenation_approaching_critical": 0.07,
+                "p_hypoxia": 0.02,
+                "p_profound_hypoxia": 0.01,
+            },
+            "yellow": {
+                "p_normoxia": 0.10,
+                "p_intermediate_oxygenation": 0.38,
+                "p_low_oxygenation_approaching_critical": 0.31,
+                "p_hypoxia": 0.16,
+                "p_profound_hypoxia": 0.05,
+            },
+            "orange": {
+                "p_normoxia": 0.03,
+                "p_intermediate_oxygenation": 0.12,
+                "p_low_oxygenation_approaching_critical": 0.27,
+                "p_hypoxia": 0.38,
+                "p_profound_hypoxia": 0.20,
+            },
+            "red": {
+                "p_normoxia": 0.01,
+                "p_intermediate_oxygenation": 0.04,
+                "p_low_oxygenation_approaching_critical": 0.14,
+                "p_hypoxia": 0.44,
+                "p_profound_hypoxia": 0.37,
+            },
+        }
+        risk_baseline = {
+            "green": 0.18,
+            "yellow": 0.45,
+            "orange": 0.70,
+            "red": 0.90,
+        }
+
+        if alert not in base_vectors:
+            return base
+
+        probs = dict(base_vectors[alert])
+        risk_adjust = 0.55 * below_10 + 0.80 * below_5 + 1.20 * below_1 + max(0.0, (20.0 - sensor_avg) / 40.0)
+        risk_score = float(np.clip(risk_baseline[alert] + risk_adjust, 0.0, 1.0))
+
+        state_order = [
+            "normoxia",
+            "intermediate_oxygenation",
+            "low_oxygenation_approaching_critical",
+            "hypoxia",
+            "profound_hypoxia",
+        ]
+        mapped_key = {
+            "normoxia": "p_normoxia",
+            "intermediate_oxygenation": "p_intermediate_oxygenation",
+            "low_oxygenation_approaching_critical": "p_low_oxygenation_approaching_critical",
+            "hypoxia": "p_hypoxia",
+            "profound_hypoxia": "p_profound_hypoxia",
+        }
+        predicted_state = max(state_order, key=lambda key: float(probs.get(mapped_key[key], 0.0)))
+
+        profile = dict(base)
+        profile.update(probs)
+        profile["predicted_state"] = predicted_state
+        profile["alert_level"] = alert
+        profile["risk_score"] = risk_score
+        return profile
+
+    def _render_radius_diagnostic_3d_probability_figure(self, plot_data, radius_um, alert_level, diag_result, scenario=None):
+        dr = self._radius_probability_profile(scenario, diag_result)
+        state = str(dr.get("predicted_state", "normoxia"))
+        state_label = self._format_oxygenation_state_label(state)
+        alert = str(dr.get("alert_level", alert_level or "unknown"))
+
+        state_colours = {
+            "normoxia": "#2ca02c",
+            "intermediate_oxygenation": "#bcbd22",
+            "low_oxygenation_approaching_critical": "#ffbb78",
+            "hypoxia": "#d62728",
+            "profound_hypoxia": "#9467bd",
+        }
+        alert_colours = {
+            "green": "#2ca02c",
+            "yellow": "#e5c011",
+            "orange": "#e57c11",
+            "red": "#d62728",
+            "unknown": "#333333",
+        }
+        alert_colour = alert_colours.get(alert, alert_colours.get(alert_level, "#333333"))
+
+        po2_mid = float(min(max(plot_data.get("sensor_target", 20.0), 12.0), plot_data["po2_max_plot"] - 1.0))
+        if plot_data["po2_min_plot"] < po2_mid < plot_data["po2_max_plot"]:
+            po2_norm = TwoSlopeNorm(
+                vmin=plot_data["po2_min_plot"],
+                vcenter=po2_mid,
+                vmax=plot_data["po2_max_plot"],
+            )
+        else:
+            po2_norm = PowerNorm(
+                gamma=0.30,
+                vmin=plot_data["po2_min_plot"],
+                vmax=plot_data["po2_max_plot"],
+            )
+
+        fig = plt.figure(figsize=(13.8, 7.8))
+        ax3d = fig.add_subplot(121, projection="3d")
+        ax3d.plot_surface(
+            plot_data["X_sym"] * 1e4,
+            plot_data["Z_rel"],
+            plot_data["PO2_sym"],
+            cmap="coolwarm",
+            edgecolor="none",
+            alpha=0.95,
+            norm=po2_norm,
+        )
+
+        contour_levels = np.arange(10, plot_data["po2_max_plot"], 10)
+        ax3d.contour(
+            plot_data["X_sym"] * 1e4,
+            plot_data["Z_rel"],
+            plot_data["PO2_sym"],
+            levels=contour_levels,
+            colors="k",
+            linewidths=0.4,
+        )
+        ax3d.contourf(
+            plot_data["X_sym"] * 1e4,
+            plot_data["Z_rel"],
+            plot_data["PO2_sym"],
+            zdir="z",
+            offset=plot_data["po2_min_plot"],
+            levels=np.linspace(plot_data["po2_min_plot"], plot_data["po2_max_plot"], 26),
+            cmap="coolwarm",
+            alpha=0.50,
+            norm=po2_norm,
+        )
+
+        z_rel_vec = np.asarray(plot_data["Z_rel"][:, 0], dtype=float)
+        n = len(z_rel_vec)
+        r_cap_um = float(R_cap) * 1e4
+        for sign in (+1, -1):
+            x_curt = np.full((2, n), sign * r_cap_um)
+            y_curt = np.vstack([z_rel_vec, z_rel_vec])
+            z_curt = np.vstack([
+                np.full(n, plot_data["po2_min_plot"]),
+                plot_data["P_c_axial"],
+            ])
+            top_norm = po2_norm(np.clip(plot_data["P_c_axial"], plot_data["po2_min_plot"], plot_data["po2_max_plot"]))
+            facecolors_curt = np.stack([
+                plt.cm.coolwarm(po2_norm(np.full(n, plot_data["po2_min_plot"]))),
+                plt.cm.coolwarm(top_norm),
+            ], axis=0)
+            ax3d.plot_surface(x_curt, y_curt, z_curt, facecolors=facecolors_curt, alpha=0.9, shade=False)
+            ax3d.plot([sign * r_cap_um] * n, z_rel_vec, plot_data["P_c_axial"], "k-", lw=1.5)
+
+        ax3d.plot(
+            np.zeros_like(z_rel_vec),
+            z_rel_vec,
+            plot_data["P_avg"],
+            "r-",
+            lw=3.0,
+            label=self.t("legend_sensor_avg"),
+            zorder=15,
+        )
+
+        x_um = np.asarray(plot_data["X_sym"][0, :], dtype=float) * 1e4
+        ax3d.set_xlabel(self.t("xlabel_radial_position"), labelpad=8)
+        ax3d.set_ylabel(self.t("ylabel_relative_length"), labelpad=10)
+        ax3d.set_zlabel(self.t("zlabel_po2"), labelpad=6)
+        ax3d.set_xlim(float(np.min(x_um)), float(np.max(x_um)))
+        ax3d.set_ylim(1.0, 0.0)
+        ax3d.set_zlim(plot_data["po2_min_plot"], plot_data["po2_max_plot"])
+        ax3d.set_yticks(np.linspace(0, 1, 6))
+        ax3d.view_init(elev=24, azim=-57)
+        ax3d.xaxis.pane.set_alpha(0.18)
+        ax3d.yaxis.pane.set_alpha(0.10)
+        ax3d.zaxis.pane.set_alpha(0.0)
+        ax3d.grid(False)
+        ax3d.legend(loc="upper left", fontsize=8)
+        ax3d.set_title(
+            f"Independent Krogh cylinder reconstruction ({radius_um:.0f} um)\n"
+            f"State: {state_label} | alert: {alert.replace('_', ' ')} | risk: {float(dr.get('risk_score', 0.0)):.3f}",
+            fontsize=8,
+            pad=6,
+        )
+
+        ax_bar = fig.add_subplot(122)
+        probability_entries = self._state_probability_entries(dr)
+        compact_labels = {
+            "normoxia": "Normoxia",
+            "intermediate_oxygenation": "Intermediate",
+            "low_oxygenation_approaching_critical": "Low O2",
+            "hypoxia": "Hypoxia",
+            "profound_hypoxia": "Profound",
+        }
+        labels = [compact_labels.get(entry[0], entry[1]) for entry in probability_entries]
+        probs = [entry[2] for entry in probability_entries]
+        bar_colours = [state_colours.get(entry[0], "#888") for entry in probability_entries]
+        bars = ax_bar.barh(labels, probs, color=bar_colours, edgecolor="k", linewidth=0.6)
+
+        ordered_states = [entry[0] for entry in probability_entries]
+        if state in ordered_states:
+            pred_idx = ordered_states.index(state)
+            bars[pred_idx].set_linewidth(2.5)
+            bars[pred_idx].set_edgecolor("black")
+
+        for bar, p in zip(bars, probs):
+            ax_bar.text(min(p + 0.015, 0.97), bar.get_y() + bar.get_height() / 2, f"{p:.3f}", va="center", ha="left", fontsize=8)
+
+        ax_bar.set_xlim(0, 1.0)
+        ax_bar.set_xlabel("Posterior probability")
+        ax_bar.tick_params(axis="y", labelsize=7, pad=3)
+        ax_bar.margins(y=0.10)
+        ax_bar.set_title(
+            f"Oxygenation state probabilities\nAlert: {alert.replace('_', ' ')}  Risk: {float(dr.get('risk_score', 0.0)):.3f}",
+            fontsize=9,
+            color=alert_colour,
+            fontweight="bold",
+        )
+        ax_bar.axvline(
+            x=float(dr.get("risk_score", 0.0)),
+            color=alert_colour,
+            linestyle="--",
+            linewidth=1.2,
+            label=f"risk_score = {float(dr.get('risk_score', 0.0)):.3f}",
+        )
+        ax_bar.legend(fontsize=7, loc="lower right")
+        ax_bar.set_anchor("W")
+
+        fig.patch.set_facecolor("#f8f8f8")
+        fig.subplots_adjust(left=0.05, right=0.985, bottom=0.10, top=0.90, wspace=0.48)
+        fig.text(
+            0.5,
+            0.01,
+            f"sensor target: {plot_data['sensor_target']:.1f} mmHg | sensor avg: {plot_data['sensor_avg']:.1f} mmHg | "
+            f"venous target: {plot_data['P_v_target']:.1f} mmHg | simulated P_venous: {plot_data['P_v_sim']:.1f} mmHg | "
+            f"perfusion={plot_data['perfusion_factor']:.2f}x | metabolic={float(plot_data.get('metabolic_rate_rel', 1.0)):.2f}x | "
+            f"fitted mitoP50: {plot_data['P_half_fit']:.3f} mmHg",
+            ha="center",
+            fontsize=8,
+            color="#444",
+            bbox=dict(boxstyle="round,pad=0.3", facecolor=alert_colour, alpha=0.20),
+        )
+        return fig
+
+    def _render_radius_po2_distribution_figure(self, plot_data, radius_um):
+        tissue_po2 = np.asarray(plot_data.get("tissue_po2", []), dtype=float)
+        if tissue_po2.size == 0:
+            tissue_po2 = np.asarray(plot_data.get("PO2_sym", []), dtype=float)
+
+        po2_inlet = max(float(plot_data.get("po2", plot_data.get("po2_max_plot", 30.0))), 1.0)
+        bins = np.linspace(0.0, po2_inlet, 26)
+        values = np.clip(tissue_po2.ravel(), 0.0, po2_inlet)
+        if values.size == 0:
+            values = np.array([0.0], dtype=float)
+
+        weights = np.full(values.shape, 100.0 / float(values.size), dtype=float)
+        hist, edges = np.histogram(values, bins=bins, weights=weights)
+        centers = 0.5 * (edges[:-1] + edges[1:])
+        width = np.diff(edges)
+
+        fig, ax = plt.subplots(figsize=(8.6, 4.8))
+        ax.bar(centers, hist, width=width * 0.92, color="#3b7ea1", edgecolor="#1f4f66", alpha=0.90)
+        ax.axvline(40.0, color="#2ca02c", linestyle="--", linewidth=1.1, label="40 mmHg")
+        ax.axvline(20.0, color="#ffbf00", linestyle="--", linewidth=1.1, label="20 mmHg")
+        ax.axvline(10.0, color="#ff7f0e", linestyle="--", linewidth=1.1, label="10 mmHg")
+        ax.axvline(2.0, color="#d62728", linestyle=":", linewidth=1.4, label="2 mmHg")
+        ax.set_xlim(0.0, po2_inlet)
+        ax.set_xlabel("pO2 (mmHg)")
+        ax.set_ylabel("Percentage of reconstructed tissue volume (%)")
+        ax.set_title(f"pO2 percentage distribution ({radius_um:.0f} um independent reconstruction)")
+        ax.grid(alpha=0.22, axis="y")
+        ax.legend(fontsize=8, loc="upper right")
+        fig.tight_layout()
+        return fig
+
+    def _save_radius_reconstruction_plots(self, plot_data_by_key, scenarios, diag_result):
+        if not plot_data_by_key:
+            return {}
+
+        output_dir = os.path.join(CURRENT_DIR, "Diagnostic reports")
+        os.makedirs(output_dir, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        ordered = [
+            ("normal_30um", 30.0),
+            ("increased_50um", 50.0),
+            ("high_100um", 100.0),
+        ]
+        saved_paths = {}
+        for key, radius_um in ordered:
+            plot_data = plot_data_by_key.get(key)
+            if not isinstance(plot_data, dict):
+                continue
+            scenario = scenarios.get(key, {}) if isinstance(scenarios, dict) else {}
+            alert_level = str(scenario.get("alert_level", "unknown"))
+
+            fig_map = self._render_radius_reconstruction_figure(plot_data, radius_um=radius_um, alert_level=alert_level)
+            path_map = os.path.join(output_dir, f"diagnostic_krogh_radius_{int(radius_um)}um_{stamp}_map_profile.png")
+            fig_map.savefig(path_map, dpi=170, bbox_inches="tight", pad_inches=0.12)
+            plt.close(fig_map)
+
+            fig_3d = self._render_radius_diagnostic_3d_probability_figure(
+                plot_data,
+                radius_um=radius_um,
+                alert_level=alert_level,
+                diag_result=diag_result,
+                scenario=scenario,
+            )
+            path_3d = os.path.join(output_dir, f"diagnostic_krogh_radius_{int(radius_um)}um_{stamp}_3d_prob.png")
+            fig_3d.savefig(path_3d, dpi=170, bbox_inches="tight", pad_inches=0.12)
+            plt.close(fig_3d)
+
+            fig_dist = self._render_radius_po2_distribution_figure(plot_data, radius_um=radius_um)
+            path_dist = os.path.join(output_dir, f"diagnostic_krogh_radius_{int(radius_um)}um_{stamp}_distribution.png")
+            fig_dist.savefig(path_dist, dpi=170, bbox_inches="tight", pad_inches=0.12)
+            plt.close(fig_dist)
+
+            saved_paths[key] = {
+                "map_profile": path_map,
+                "diagnostic_3d_prob": path_3d,
+                "po2_distribution": path_dist,
+            }
+        return saved_paths
 
     def _result_label(self, field_name):
         return self._result_label_for_context(field_name, None)
@@ -1806,6 +2485,23 @@ class KroghGUI(tk.Tk):
         except Exception:
             return "inlet"
 
+    def _set_base_tissue_radius_geometry(self, radius_um):
+        global R_tis, r_vec, dr, radial_weights
+
+        radius_um = float(radius_um)
+        if not any(np.isclose(radius_um, allowed) for allowed in ALLOWED_TISSUE_RADIUS_UM):
+            raise ValueError("Unsupported tissue radius")
+
+        R_tis = max(float(R_cap), radius_um * 1e-4)
+        r_vec = np.linspace(float(R_cap), float(R_tis), int(NR))
+        dr = max((float(R_tis) - float(R_cap)) / max(int(NR) - 1, 1), 1e-12)
+        radial_weights = r_vec / np.sum(r_vec * dr)
+
+        if hasattr(self, "plot_workflow"):
+            self.plot_workflow.r_tis = float(R_tis)
+        if hasattr(self, "reconstructor"):
+            self.reconstructor = self._build_reconstructor_for_current_geometry()
+
     def _result_description(self, field_name):
         return self.translation_manager.result_description(
             field_name,
@@ -1854,6 +2550,8 @@ class KroghGUI(tk.Tk):
             "pCO2_mmHg",
             "Temp_C",
             "Perfusion_factor",
+            "Metabolic_rate_rel",
+            "Tissue_radius_um",
             "High_PO2_threshold_1_mmHg",
             "High_PO2_threshold_2_mmHg",
             "Relative_PO2_reference",
@@ -2028,6 +2726,8 @@ class KroghGUI(tk.Tk):
                 "pCO2": float(self.entries["pCO2_mmHg"].get()),
                 "temp_c": float(self.entries["Temp_C"].get()),
                 "perf": float(self.entries["Perfusion_factor"].get()),
+                "metabolic_rate_rel": float(self.entries["Metabolic_rate_rel"].get()),
+                "tissue_radius_um": float(self.entries["Tissue_radius_um"].get()),
                 "high_po2_threshold_primary": float(self.entries["High_PO2_threshold_1_mmHg"].get()),
                 "high_po2_threshold_secondary": float(self.entries["High_PO2_threshold_2_mmHg"].get()),
                 "additional_high_po2_thresholds": self._parse_threshold_list(
@@ -2051,6 +2751,17 @@ class KroghGUI(tk.Tk):
         if params["perf"] <= 0.0:
             messagebox.showerror(self.t("input_error_title"), self.t("input_error_perf"))
             return None
+
+        if params["metabolic_rate_rel"] <= 0.0:
+            messagebox.showerror(self.t("input_error_title"), self.t("input_error_numeric"))
+            return None
+
+        if not any(np.isclose(float(params["tissue_radius_um"]), allowed) for allowed in ALLOWED_TISSUE_RADIUS_UM):
+            messagebox.showerror(self.t("input_error_title"), self.t("input_error_numeric"))
+            return None
+
+        self.entries["Tissue_radius_um"].set(f"{int(round(float(params['tissue_radius_um'])))}")
+        self._set_base_tissue_radius_geometry(float(params["tissue_radius_um"]))
 
         if params["high_po2_threshold_primary"] <= 0.0 or params["high_po2_threshold_secondary"] <= 0.0:
             messagebox.showerror(self.t("input_error_title"), self.t("input_error_numeric"))
@@ -2093,6 +2804,8 @@ class KroghGUI(tk.Tk):
             ("pCO2_mmHg",      params["pCO2"]),
             ("Temp_C",         params["temp_c"]),
             ("Perfusion_factor", params["perf"]),
+            ("Metabolic_rate_rel", params["metabolic_rate_rel"]),
+            ("Tissue_radius_um", params["tissue_radius_um"]),
         ]
         if not self._check_physiological_warnings(physio_checks):
             return None
@@ -2158,8 +2871,16 @@ class KroghGUI(tk.Tk):
             messagebox.showerror(self.t("input_error_title"), self.t("input_error_perf_sweep"))
             return None
 
+        if sweep_field_key == "Metabolic_rate_rel" and (start_value <= 0.0 or end_value <= 0.0):
+            messagebox.showerror(self.t("input_error_title"), self.t("input_error_numeric"))
+            return None
+
         if secondary_field_key == "Perfusion_factor" and (secondary_start_value <= 0.0 or secondary_end_value <= 0.0):
             messagebox.showerror(self.t("input_error_title"), self.t("input_error_secondary_perf_sweep"))
+            return None
+
+        if secondary_field_key == "Metabolic_rate_rel" and (secondary_start_value <= 0.0 or secondary_end_value <= 0.0):
+            messagebox.showerror(self.t("input_error_title"), self.t("input_error_numeric"))
             return None
 
         selected_indices = self.series_plot_listbox.curselection()
@@ -2256,7 +2977,7 @@ class KroghGUI(tk.Tk):
     def _toggle_inputs(self):
         state = "normal" if self.mode_var.get() in {"single", "series"} else "disabled"
         for name, entry in self.entries.items():
-            if name == "Relative_PO2_reference":
+            if name in {"Relative_PO2_reference", "Tissue_radius_um"}:
                 entry.config(state="readonly" if state == "normal" else "disabled")
             else:
                 entry.config(state=state)
@@ -2285,6 +3006,8 @@ class KroghGUI(tk.Tk):
             self.save_publication_report_button.config(state=state)
         if hasattr(self, "reconstruct_krogh_button"):
             self.reconstruct_krogh_button.config(state=state)
+        if hasattr(self, "run_reconstruction_benchmark_button"):
+            self.run_reconstruction_benchmark_button.config(state=state)
 
         if hasattr(self, "settings_notebook"):
             self.settings_notebook.tab(self.series_tab, state="normal" if self.mode_var.get() == "series" else "hidden")
@@ -2334,6 +3057,7 @@ class KroghGUI(tk.Tk):
             ph = float(self.diagnostic_entries["pH"].get())
             temperature_c = float(self.diagnostic_entries["temperature_c"].get())
             sensor_po2 = float(self.diagnostic_entries["sensor_po2"].get())
+            metabolic_rate_rel = float(self.diagnostic_entries["metabolic_rate_rel"].get() or 1.0)
             hb_str = self.diagnostic_entries["hemoglobin_g_dl"].get().strip()
             hemoglobin = float(hb_str) if hb_str else 13.5
             sv_str = self.diagnostic_entries["venous_sat_percent"].get().strip()
@@ -2342,6 +3066,10 @@ class KroghGUI(tk.Tk):
             orange_threshold = float(self.diagnostic_entries["orange_threshold"].get())
             red_threshold = float(self.diagnostic_entries["red_threshold"].get())
         except ValueError:
+            messagebox.showerror(self.t("input_error_title"), self.t("diag_input_error"))
+            return
+
+        if metabolic_rate_rel <= 0.0:
             messagebox.showerror(self.t("input_error_title"), self.t("diag_input_error"))
             return
 
@@ -2356,6 +3084,7 @@ class KroghGUI(tk.Tk):
                 pH=ph,
                 temperature_c=temperature_c,
                 sensor_po2=sensor_po2,
+                metabolic_rate_rel=metabolic_rate_rel,
                 hemoglobin_g_dl=hemoglobin,
                 venous_sat_percent=venous_sat,
                 yellow_threshold=yellow_threshold,
@@ -2376,9 +3105,15 @@ class KroghGUI(tk.Tk):
             f"Certainty: {float(result['certainty']):.3f}"
         )
         output_lines.append(f"p_normoxia={float(result['p_normoxia']):.3f}")
-        output_lines.append(f"p_mild_tissue_hypoxia={float(result['p_mild_hypoxia']):.3f}")
-        output_lines.append(f"p_compensated_tissue_hypoxia={float(result['p_compensated_hypoxia']):.3f}")
-        output_lines.append(f"p_severe_tissue_hypoxia={float(result['p_severe_hypoxia']):.3f}")
+        output_lines.append(
+            f"p_intermediate_oxygenation_40_to_20={float(result.get('p_intermediate_oxygenation', result.get('p_mild_hypoxia', 0.0))):.3f}"
+        )
+        output_lines.append(
+            f"p_low_oxygenation_20_to_10={float(result.get('p_low_oxygenation_approaching_critical', result.get('p_compensated_hypoxia', 0.0))):.3f}"
+        )
+        output_lines.append(
+            f"p_hypoxia_below_10={float(result.get('p_hypoxia', result.get('p_severe_hypoxia', 0.0))):.3f}"
+        )
         output_lines.append(f"p_profound_tissue_hypoxia={float(result['p_profound_hypoxia']):.3f}")
         radius_mode, _, radius_label = self._get_diagnostic_radius_preferences()
         if radius_mode == "selected":
@@ -2409,6 +3144,7 @@ class KroghGUI(tk.Tk):
                     "pH": float(self.diagnostic_entries["pH"].get() or 7.4),
                     "temperature_c": float(self.diagnostic_entries["temperature_c"].get() or 37.0),
                     "sensor_po2": float(self.diagnostic_entries["sensor_po2"].get() or 25.0),
+                    "metabolic_rate_rel": float(self.diagnostic_entries["metabolic_rate_rel"].get() or 1.0),
                     "true_state": "",
                 }
             ]
@@ -2488,7 +3224,9 @@ class KroghGUI(tk.Tk):
         )
 
     def _fit_joint_krogh_parameters(self, P_inlet, sensor_target, P_v_target, pH, pCO2, temp_c,
-                                    include_axial=True, venous_weight=0.15):
+                                    metabolic_target=1.0, fit_metabolic=True,
+                                    include_axial=True, venous_weight=0.15, bootstrap_samples=80,
+                                    p_half_bounds=(0.1, 5.0)):
         return self.reconstructor.fit_joint_parameters(
             P_inlet=P_inlet,
             sensor_target=sensor_target,
@@ -2496,8 +3234,12 @@ class KroghGUI(tk.Tk):
             pH=pH,
             pCO2=pCO2,
             temp_c=temp_c,
+            metabolic_target=metabolic_target,
+            fit_metabolic=fit_metabolic,
+            p_half_bounds=p_half_bounds,
             include_axial=include_axial,
             venous_weight=venous_weight,
+            bootstrap_samples=bootstrap_samples,
         )
 
     def _run_reconstruct_krogh(self):
@@ -2513,6 +3255,7 @@ class KroghGUI(tk.Tk):
             ph = float(self.diagnostic_entries["pH"].get())
             temperature_c = float(self.diagnostic_entries["temperature_c"].get())
             sensor_po2 = float(self.diagnostic_entries["sensor_po2"].get())
+            metabolic_rate_rel = float(self.diagnostic_entries["metabolic_rate_rel"].get() or 1.0)
             venous_sat_raw = self.diagnostic_entries["venous_sat_percent"].get().strip()
             hemoglobin_raw = self.diagnostic_entries["hemoglobin_g_dl"].get().strip()
             venous_sat = float(venous_sat_raw) if venous_sat_raw else 75.0
@@ -2521,6 +3264,10 @@ class KroghGUI(tk.Tk):
             orange_threshold = float(self.diagnostic_entries["orange_threshold"].get())
             red_threshold = float(self.diagnostic_entries["red_threshold"].get())
         except ValueError:
+            messagebox.showerror(self.t("input_error_title"), self.t("diag_input_error"))
+            return
+
+        if metabolic_rate_rel <= 0.0:
             messagebox.showerror(self.t("input_error_title"), self.t("diag_input_error"))
             return
 
@@ -2539,6 +3286,7 @@ class KroghGUI(tk.Tk):
                 pH=ph,
                 temperature_c=temperature_c,
                 sensor_po2=sensor_po2,
+                metabolic_rate_rel=metabolic_rate_rel,
                 hemoglobin_g_dl=hemoglobin,
                 venous_sat_percent=venous_sat,
                 yellow_threshold=yellow_threshold,
@@ -2559,6 +3307,14 @@ class KroghGUI(tk.Tk):
         if numeric_settings is None:
             return
 
+        if hasattr(self, "entries") and "Tissue_radius_um" in self.entries:
+            try:
+                base_radius_um = float(self.entries["Tissue_radius_um"].get())
+                if any(np.isclose(base_radius_um, allowed) for allowed in ALLOWED_TISSUE_RADIUS_UM):
+                    self._set_base_tissue_radius_geometry(base_radius_um)
+            except Exception:
+                pass
+
         self._append(self.t("diag_krogh_computing"))
         self._set_progress_running(True)
         radius_mode, selected_radius_key, selected_radius_label = self._get_diagnostic_radius_preferences()
@@ -2567,6 +3323,7 @@ class KroghGUI(tk.Tk):
             kwargs={
                 "po2": po2, "pco2": pco2, "ph": ph,
                 "temperature_c": temperature_c, "sensor_po2": sensor_po2,
+                "metabolic_rate_rel": metabolic_rate_rel,
                 "venous_sat": venous_sat, "P_v_target": P_v_target,
                 "venous_weight": venous_weight,
                 "diag_result": result,
@@ -2578,7 +3335,37 @@ class KroghGUI(tk.Tk):
             daemon=True,
         ).start()
 
+    def _run_reconstruction_benchmark_from_gui(self):
+        self._append(self.t("diag_benchmark_starting"))
+        self._set_progress_running(True)
+        threading.Thread(
+            target=self._compute_reconstruction_benchmark,
+            daemon=True,
+        ).start()
+
+    def _compute_reconstruction_benchmark(self):
+        try:
+            output_dir = os.path.join(CURRENT_DIR, "Diagnostic reports")
+            results = run_and_save_default_reconstruction_benchmark(output_dir)
+            summary_text = ReconstructionBenchmarkRunner(reconstructor=self.reconstructor).format_summary_text(results)
+            comparison_summary = dict(results.get("comparison_summary", {}))
+
+            self._append_async(self.t("diag_benchmark_ready"))
+            self._append_async(f"[Benchmark] {summary_text}")
+            if int(comparison_summary.get("case_count", 0)) > 0:
+                self._append_async(
+                    "[Benchmark] Legacy comparison: "
+                    f"mean speedup {float(comparison_summary.get('mean_speedup_ratio', float('nan'))):.2f}x | "
+                    f"mean saved {float(comparison_summary.get('mean_elapsed_saved_s', float('nan'))):.2f} s"
+                )
+            self._append_async(f"[Benchmark] Saved reports to: {output_dir}")
+        except Exception as exc:
+            self._append_async(self.t("diag_benchmark_error", error=exc))
+        finally:
+            self._call_on_ui_thread(self._set_progress_running, False)
+
     def _compute_krogh_reconstruction(self, po2, pco2, ph, temperature_c, sensor_po2,
+                                       metabolic_rate_rel,
                                        venous_sat, P_v_target, venous_weight, diag_result, numeric_settings,
                                        radius_mode="all", selected_radius_key="high_100um", selected_radius_label="100 µm"):
         try:
@@ -2590,8 +3377,12 @@ class KroghGUI(tk.Tk):
                     pH=ph,
                     pCO2=pco2,
                     temp_c=temperature_c,
+                    metabolic_target=metabolic_rate_rel,
+                    fit_metabolic=True,
+                    p_half_bounds=(0.1, 5.0),
                     include_axial=True,
                     venous_weight=venous_weight,
+                    bootstrap_samples=int(numeric_settings.get("bootstrap_samples", BOOTSTRAP_SAMPLES)),
                 )
 
             plot_data = self.reconstructor.build_plot_data(
@@ -2607,6 +3398,35 @@ class KroghGUI(tk.Tk):
                 fit=fit,
             )
 
+            refit_scenarios, refit_radius_summary, refit_plot_data = self._build_radius_refit_scenarios(
+                po2=po2,
+                pco2=pco2,
+                ph=ph,
+                temperature_c=temperature_c,
+                venous_sat=venous_sat,
+                P_v_target=P_v_target,
+                venous_weight=venous_weight,
+                sensor_po2=sensor_po2,
+                metabolic_rate_rel=metabolic_rate_rel,
+                diag_result=diag_result,
+                numeric_settings=numeric_settings,
+            )
+            if refit_scenarios:
+                plot_data["radius_scenarios"] = refit_scenarios
+                plot_data["radius_sensitivity_summary"] = refit_radius_summary
+
+            radius_plot_paths = {}
+            auto_save_var = getattr(self, "auto_save_radius_plots_var", None)
+            auto_save_enabled = True if auto_save_var is None else bool(auto_save_var.get())
+            if auto_save_enabled:
+                radius_plot_paths = self._save_radius_reconstruction_plots(
+                    refit_plot_data,
+                    refit_scenarios,
+                    diag_result,
+                )
+                if radius_plot_paths:
+                    plot_data["radius_report_figure_paths"] = dict(radius_plot_paths)
+
             radius_alert_summary = self._format_radius_alert_summary(plot_data, radius_mode, selected_radius_key)
             if radius_alert_summary:
                 plot_data["radius_sensitivity_summary"] = radius_alert_summary
@@ -2614,6 +3434,7 @@ class KroghGUI(tk.Tk):
             P_half_fit = float(plot_data["P_half_fit"])
             P_v_sim = float(plot_data["P_v_sim"])
             perfusion_factor = float(plot_data["perfusion_factor"])
+            fitted_metabolic_rate = float(plot_data.get("metabolic_rate_rel", metabolic_rate_rel))
             sensor_sim = float(plot_data["sensor_sim"])
             self.last_diagnostic_result = dict(diag_result)
             self.last_krogh_reconstruction = {
@@ -2621,11 +3442,14 @@ class KroghGUI(tk.Tk):
                 "P_v_target": float(P_v_target),
                 "P_v_sim": P_v_sim,
                 "perfusion_factor": perfusion_factor,
+                "metabolic_rate_rel": fitted_metabolic_rate,
+                "metabolic_target": float(metabolic_rate_rel),
                 "sensor_target": float(sensor_po2),
                 "sensor_sim": sensor_sim,
                 "sensor_error": float(plot_data.get("sensor_error", 0.0)),
                 "venous_error": float(plot_data.get("venous_error", 0.0)),
                 "fit_warning": bool(plot_data.get("fit_warning", False)),
+                "fit_boundary_hit": bool(plot_data.get("fit_boundary_hit", False)),
                 "uncertainty": dict(plot_data.get("uncertainty", {})),
                 "hypoxic_fraction_map": dict(plot_data.get("hypoxic_fraction_map", {})),
                 "hypoxic_burden_summary": str(plot_data.get("hypoxic_burden_summary", "") or ""),
@@ -2635,6 +3459,7 @@ class KroghGUI(tk.Tk):
                 "selected_radius_label": str(selected_radius_label),
                 "radius_sensitivity_summary": str(plot_data.get("radius_sensitivity_summary", "") or ""),
                 "assumption_summary": str(plot_data.get("assumption_summary", "") or ""),
+                "radius_report_figure_paths": dict(plot_data.get("radius_report_figure_paths", {}) or {}),
             }
 
             fit_info = self.t(
@@ -2646,6 +3471,7 @@ class KroghGUI(tk.Tk):
             self._append_async(fit_info)
             self._append_async(
                 f"[Krogh] perfusion={perfusion_factor:.2f}x | "
+                f"metabolic={fitted_metabolic_rate:.2f}x (target {float(metabolic_rate_rel):.2f}x) | "
                 f"P_venous target={P_v_target:.1f} mmHg (simulated={P_v_sim:.1f} mmHg)"
             )
             if plot_data.get("assumption_summary"):
@@ -2654,6 +3480,20 @@ class KroghGUI(tk.Tk):
                 self._append_async(f"[Krogh] {plot_data['hypoxic_burden_summary']}")
             if plot_data.get("radius_sensitivity_summary"):
                 self._append_async(f"[Krogh] {plot_data['radius_sensitivity_summary']}")
+            if radius_plot_paths:
+                path_chunks = []
+                for key, artifact_map in radius_plot_paths.items():
+                    if isinstance(artifact_map, dict):
+                        compact = ", ".join(
+                            f"{name}={path}" for name, path in artifact_map.items() if path
+                        )
+                        path_chunks.append(f"{key}({compact})")
+                    else:
+                        path_chunks.append(f"{key}:{artifact_map}")
+                self._append_async(
+                    "[Krogh] Saved independent radius reconstructions: "
+                    + " | ".join(path_chunks)
+                )
             uncertainty = plot_data.get("uncertainty", {})
             uncertainty_summary = uncertainty.get("summary")
             if uncertainty_summary:
@@ -2665,6 +3505,10 @@ class KroghGUI(tk.Tk):
             if bool(fit["fit_warning"]):
                 self._append_async(
                     "[Krogh] Note: these diagnostic inputs are only partly representable by a single Krogh cylinder; the plot shows the best joint compromise."
+                )
+            if bool(plot_data.get("fit_boundary_hit", False)):
+                self._append_async(
+                    "[Krogh] Parameter-boundary warning: best fit reached at least one configured parameter limit (mitoP50, perfusion, or metabolic rate)."
                 )
             self._append_async(self.t("diag_krogh_ready"))
             self._call_on_ui_thread(self._show_krogh_reconstruction_plot, plot_data)
@@ -2680,16 +3524,16 @@ class KroghGUI(tk.Tk):
         # Map 5-state -> normalized alert colour for annotation bar
         _state_colours = {
             "normoxia": "#2ca02c",
-            "mild_hypoxia": "#bcbd22",
-            "compensated_hypoxia": "#ff7f0e",
-            "severe_hypoxia": "#d62728",
+            "intermediate_oxygenation": "#bcbd22",
+            "low_oxygenation_approaching_critical": "#ffbb78",
+            "hypoxia": "#d62728",
             "profound_hypoxia": "#9467bd",
         }
         _alert_colours = {
-            "ok": "#2ca02c",
-            "alert_yellow": "#e5c011",
-            "alert_orange": "#e57c11",
-            "critical_alert": "#d62728",
+            "green": "#2ca02c",
+            "yellow": "#e5c011",
+            "orange": "#e57c11",
+            "red": "#d62728",
         }
         state = dr["predicted_state"]
         state_label = self._format_oxygenation_state_label(state)
@@ -2794,15 +3638,26 @@ class KroghGUI(tk.Tk):
         # Right: probability bar chart
         ax_bar = fig.add_subplot(122)
         states_ordered = [
-            "normoxia", "mild_hypoxia", "compensated_hypoxia",
-            "severe_hypoxia", "profound_hypoxia",
+            "normoxia", "intermediate_oxygenation", "low_oxygenation_approaching_critical",
+            "hypoxia", "profound_hypoxia",
         ]
-        probs = [float(dr.get(f"p_{s}", 0.0)) for s in states_ordered]
+        probs = [
+            float(dr.get("p_normoxia", 0.0)),
+            float(dr.get("p_intermediate_oxygenation", dr.get("p_mild_hypoxia", 0.0))),
+            float(
+                dr.get(
+                    "p_low_oxygenation_approaching_critical",
+                    dr.get("p_compensated_hypoxia", 0.0),
+                )
+            ),
+            float(dr.get("p_hypoxia", dr.get("p_severe_hypoxia", 0.0))),
+            float(dr.get("p_profound_hypoxia", 0.0)),
+        ]
         compact_labels = {
             "normoxia": "Normoxia",
-            "mild_hypoxia": "Mild hypoxia",
-            "compensated_hypoxia": "Compensated",
-            "severe_hypoxia": "Severe",
+            "intermediate_oxygenation": "Intermediate",
+            "low_oxygenation_approaching_critical": "Low O2",
+            "hypoxia": "Hypoxia",
             "profound_hypoxia": "Profound",
         }
         labels = [compact_labels.get(s, self._format_oxygenation_state_label(s)) for s in states_ordered]
@@ -2823,7 +3678,7 @@ class KroghGUI(tk.Tk):
 
         ax_bar.set_xlim(0, 1.0)
         ax_bar.set_xlabel("Posterior probability")
-        ax_bar.tick_params(axis="y", labelsize=8, pad=2)
+        ax_bar.tick_params(axis="y", labelsize=7, pad=3)
         ax_bar.margins(y=0.10)
         ax_bar.set_title(
             f"Tissue oxygenation state probabilities\n"
@@ -2836,9 +3691,10 @@ class KroghGUI(tk.Tk):
         ax_bar.axvline(x=float(dr.get("risk_score", 0.0)), color=alert_colour,
                        linestyle="--", linewidth=1.2, label=f"risk_score = {float(dr.get('risk_score',0.0)):.3f}")
         ax_bar.legend(fontsize=7, loc="lower right")
+        ax_bar.set_anchor("W")
 
         fig.patch.set_facecolor("#f8f8f8")
-        fig.subplots_adjust(left=0.05, right=0.98, bottom=0.10, top=0.90, wspace=0.34)
+        fig.subplots_adjust(left=0.05, right=0.985, bottom=0.10, top=0.90, wspace=0.48)
 
         if plot_data.get("fit_warning"):
             fig.text(
@@ -2862,7 +3718,9 @@ class KroghGUI(tk.Tk):
             0.5, 0.01,
             f"sensor target: {plot_data['sensor_target']:.1f} mmHg | sensor avg: {plot_data['sensor_avg']:.1f} mmHg | "
             f"{venous_label}: {plot_data['P_v_target']:.1f} mmHg | simulated P_venous: {plot_data['P_v_sim']:.1f} mmHg | "
-            f"perfusion={plot_data['perfusion_factor']:.2f}x | fitted mitoP50 (P\u00bd): {plot_data['P_half_fit']:.3f} mmHg"
+            f"perfusion={plot_data['perfusion_factor']:.2f}x | metabolic={float(plot_data.get('metabolic_rate_rel', 1.0)):.2f}x "
+            f"(target {float(plot_data.get('metabolic_target', 1.0)):.2f}x) | "
+            f"fitted mitoP50 (P\u00bd): {plot_data['P_half_fit']:.3f} mmHg"
             f"{uncertainty_suffix}",
             ha="center", fontsize=8, color="#444",
             bbox=dict(boxstyle="round,pad=0.3", facecolor=alert_colour, alpha=0.20),
@@ -2906,6 +3764,8 @@ class KroghGUI(tk.Tk):
         pCO2,
         temp_c,
         perf,
+        metabolic_rate_rel,
+        tissue_radius_um,
         high_po2_threshold_primary,
         high_po2_threshold_secondary,
         additional_high_po2_thresholds,
@@ -2926,6 +3786,7 @@ class KroghGUI(tk.Tk):
                     pCO2=pCO2,
                     temp_c=temp_c,
                     perfusion_factor=perf,
+                    metabolic_rate_rel=metabolic_rate_rel,
                     include_axial_diffusion=include_axial,
                     high_po2_threshold_primary=high_po2_threshold_primary,
                     high_po2_threshold_secondary=high_po2_threshold_secondary,
@@ -2949,6 +3810,12 @@ class KroghGUI(tk.Tk):
                     high_po2_threshold_secondary=high_po2_threshold_secondary,
                     relative_po2_reference=self.t(f"reference_{relative_high_po2_reference}"),
                 )
+            )
+            self._append_async(
+                f"    {self._field_label('Tissue_radius_um')}={float(tissue_radius_um):.0f}"
+            )
+            self._append_async(
+                f"    {self._field_label('Metabolic_rate_rel')}={float(metabolic_rate_rel):.3g}"
             )
             self._append_async(self.t("outputs_header"))
             self._append_async("    {}={:.2f}".format(self._result_label_for_context("P50_eff", result_label_context), res["P50_eff"]))
@@ -3125,6 +3992,8 @@ class KroghGUI(tk.Tk):
                     "pCO2_mmHg": self._field_label("pCO2_mmHg"),
                     "Temp_C": self._field_label("Temp_C"),
                     "Perfusion_factor": self._field_label("Perfusion_factor"),
+                    "Metabolic_rate_rel": self._field_label("Metabolic_rate_rel"),
+                    "Tissue_radius_um": self._field_label("Tissue_radius_um"),
                     "High_PO2_threshold_1_mmHg": self._field_label("High_PO2_threshold_1_mmHg"),
                     "High_PO2_threshold_2_mmHg": self._field_label("High_PO2_threshold_2_mmHg"),
                     "High_PO2_additional_thresholds_mmHg": self._field_label("High_PO2_additional_thresholds_mmHg"),
@@ -3178,6 +4047,8 @@ class KroghGUI(tk.Tk):
                         "pCO2_mmHg": base_params["pCO2"],
                         "Temp_C": base_params["temp_c"],
                         "Perfusion_factor": base_params["perf"],
+                        "Metabolic_rate_rel": base_params["metabolic_rate_rel"],
+                        "Tissue_radius_um": base_params["tissue_radius_um"],
                         "High_PO2_threshold_1_mmHg": base_params["high_po2_threshold_primary"],
                         "High_PO2_threshold_2_mmHg": base_params["high_po2_threshold_secondary"],
                         "High_PO2_additional_thresholds_mmHg": ", ".join(f"{value:.6g}" for value in base_params["additional_high_po2_thresholds"]),
@@ -3357,6 +4228,7 @@ class KroghGUI(tk.Tk):
         pCO2,
         temp_c,
         perf,
+        metabolic_rate_rel,
         include_axial,
         numeric_settings,
         **_ignored_kwargs,
@@ -3370,6 +4242,7 @@ class KroghGUI(tk.Tk):
                     p50_eff=p50_eff,
                     include_axial_diffusion=include_axial,
                     perfusion_factor=perf,
+                    metabolic_rate_rel=metabolic_rate_rel,
                 )
             P_avg = np.average(tissue_po2, axis=1, weights=radial_weights)
 
@@ -3390,6 +4263,7 @@ class KroghGUI(tk.Tk):
                 "pCO2": pCO2,
                 "temp_c": temp_c,
                 "perf": perf,
+                "metabolic_rate_rel": metabolic_rate_rel,
                 "p50_eff": float(p50_eff),
                 "P_c_axial": P_c_axial,
                 "P_avg": P_avg,

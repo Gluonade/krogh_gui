@@ -6,104 +6,164 @@
 \geometry{margin=2.2cm}
 \setlength{\parindent}{0pt}
 \setlength{\parskip}{0.55em}
-\title{Krogh GUI\\Kurzanleitung fuer die praktische Nutzung}
-\author{Kurzreferenz}
-\date{18. April 2026}
+\title{Krogh GUI\\Quickstart and Practical Workflow Guide}
+\author{Practical reference}
+\date{23 April 2026}
 
 \begin{document}
 \sloppy
 \maketitle
 \tableofcontents
 
-\section{Zweck}
-Diese Kurzanleitung fasst die praktische Nutzung der Krogh-GUI in kompakter Form zusammen. Sie richtet sich an Anwender, die schnell arbeiten wollen, ohne jedes Mal die gesamte Langdokumentation zu lesen.
+\section{Purpose}
+This quickstart explains how to use the current Krogh GUI version efficiently in daily work. It is focused on operations, while the full mathematical derivations are documented in \texttt{krogh\_GUI\_documentation.pdf} and \texttt{oxygenation\_diagnostic\_mvp\_documentation.pdf}.
 
-\section{Aktueller Projektstand}
-Die Anwendung befindet sich jetzt in einem deutlich klareren, modularisierten Zustand als in den frueheren Ein-Datei-Versionen. Fuer die praktische Nutzung ist wichtig:
+\section{Start the application}
+From the project root:
+\begin{verbatim}
+source .venv/bin/activate
+python app.py
+\end{verbatim}
+
+\section{Project orientation (short)}
+You will mainly interact with:
 \begin{itemize}
-  \item \texttt{app.py} ist der kleine Startpunkt fuer die Anwendung,
-  \item \texttt{krogh\_GUI.py} bleibt als Hauptfenster und Kompatibilitaetsschicht erhalten,
-  \item wiederverwendbare Logik wurde nach \texttt{krogh\_app/} ausgelagert,
-  \item Plotting, Sweep-Workflow, Diagnostik, Rekonstruktion, Speichern/Laden und Sprachlogik sind jetzt in getrennten Modulen organisiert.
+    \item \texttt{app.py} (launcher),
+    \item \texttt{krogh\_GUI.py} (main GUI and forward model),
+    \item \texttt{krogh\_app/reconstruction.py} (inverse fitting),
+    \item \texttt{oxygenation\_diagnostic\_mvp.py} (probabilistic diagnostics),
+    \item \texttt{krogh\_app/persistence.py} (report and export logic).
 \end{itemize}
 
-Damit ist das Projekt fuer Anwender unveraendert bedienbar, aber fuer Wartung, Nachvollziehbarkeit und spaetere Erweiterungen deutlich besser strukturiert.
-
-\section{Programmstart}
-Die Anwendung wird ueber die Python-Datei gestartet. Nach dem Oeffnen stehen die Bereiche Eingaben, Serie, Numerik und Diagnostik zur Verfuegung. Vor dem ersten Lauf sollte geprueft werden, ob alle benoetigten Felder sinnvoll vorbelegt sind.
-
-\section{Einzelfall rechnen}
-Fuer einen Standardlauf werden folgende Felder gesetzt:
+\section{GUI overview}
+Main tabs:
 \begin{itemize}
-  \item Eingangs-PO$_2$,
-  \item mitochondriales $P_{50}$,
-  \item pH,
-  \item pCO$_2$,
-  \item Temperatur,
-  \item Perfusionsfaktor.
-\end{itemize}
-Danach kann die Berechnung direkt gestartet werden. Wichtige Resultate sind der venoese Druck, das Gewebeminimum, das 5\%-Perzentil und die hypoxischen Flaechenanteile.
-
-\section{Serienanalyse}
-Fuer Sweep-Studien wird ein oder werden zwei Parameter ausgewaehlt und ueber einen Bereich variiert. Sinnvoll ist es, mit groberen Schritten zu beginnen und interessante Zonen spaeter feiner aufgeloest nachzurechnen. Bei auffaelligen Knicken oder Spruengen sollte man die Numerik etwas verschaerfen.
-
-\section{Numerik}
-Wenn Ergebnisse numerisch empfindlich wirken, helfen folgende Anpassungen:
-\begin{itemize}
-  \item kleinere ODE-Toleranzen,
-  \item kleinere maximale Schrittweite,
-  \item mehr Iterationen fuer die Gewebediffusion,
-  \item strengere Kopplungstoleranzen.
-\end{itemize}
-Fuer normale Alltagsfaelle reichen die Standardwerte meist aus.
-
-\section{Diagnostik}
-Im Diagnosebereich koennen Blutgaswerte und ein Sensor-PO$_2$ eingegeben werden. Die aktuelle Voreinstellung fuer den Sensorwert liegt nun bei 25 mmHg, weil dies den vorgesehenen diagnostischen Demonstrationsfall deutlich besser abbildet als die fruehere hohe Standardvorgabe.
-
-Das Modul gibt nicht mehr nur einen Risikoscore, eine Ampelfarbe und Wahrscheinlichkeiten fuer verschiedene Hypoxiezustaende zurueck. Die optimierte Fassung zeigt jetzt auch:
-\begin{itemize}
-  \item die wichtigsten Treiber des Alerts,
-  \item eine rekonstruierte Krogh-Erklaerung fuer die Messwerte,
-  \item den geschaetzten versteckten hypoxischen Gewebeanteil unter mehreren PO$_2$-Schwellen,
-  \item eine radiusabhaengige Bewertung fuer 30, 50 und 100~\textmu m.
+    \item \textbf{Inputs}: single-case physiological setup.
+    \item \textbf{Series}: 1D/2D parameter sweeps and plots.
+    \item \textbf{Numerics}: solver tolerances/iterations and bootstrap sample count.
+    \item \textbf{Diagnostic}: probabilistic assessment, reconstruction, report export, benchmark button.
 \end{itemize}
 
-Damit kann der Nutzer besser beurteilen, ob ein gelber oder oranger Alert robust ist oder vor allem unter einer groesseren bzw. geschwollenen Geometrieannahme entsteht und klinisch entsprechend eingeordnet werden sollte.
+\section{Single-case workflow}
+\begin{enumerate}
+    \item Enter PO$_2$ inlet, mitoP50, pH, pCO$_2$, temperature, perfusion factor, relative tissue O$_2$ consumption, and base tissue radius.
+    \item Keep axial diffusion enabled unless you intentionally want a faster reduced run.
+    \item Set absolute and relative high-PO$_2$ thresholds if needed.
+    \item Click \texttt{Run}.
+\end{enumerate}
 
-\section{Interpretation}
-Eine gute Interpretation nutzt nie nur einen einzigen Wert. Besonders hilfreich ist die gemeinsame Betrachtung von:
+Key outputs:
 \begin{itemize}
-  \item $P_{venous}$,
-  \item $P_{tissue,P05}$,
-  \item Hypoxiefraktionen,
-  \item Sensorsignal-Mittelwert,
-  \item Verlauf im Sweep.
+    \item \texttt{P\_venous}, \texttt{P\_tissue\_min}, \texttt{P\_tissue\_p05},
+    \item hypoxic fractions below 1/5/10 mmHg,
+    \item above-threshold fractions (absolute and relative),
+    \item sensor-like tissue average PO$_2$, arterial and venous saturation.
 \end{itemize}
 
-\section{Speichern und Dokumentieren}
-Empfohlen wird, interessante Faelle immer zusammen mit den Parametern und Plots zu speichern. So bleiben Ergebnisse spaeter reproduzierbar.
+\section{Series workflow}
+\begin{enumerate}
+    \item Select 1D or 2D sweep.
+    \item Choose primary (and optional secondary) sweep parameter; metabolic-rate sweeps are supported.
+    \item Set start/end/step values.
+    \item Select plot fields and plot mode (2D, 3D surface, heatmap).
+    \item Run series and optionally save run bundle.
+\end{enumerate}
 
-Neu hinzugekommen sind mehrere direkte Exportwege:
+Saved bundle contents:
 \begin{itemize}
-  \item Diagnoseberichte als JSON oder CSV,
-  \item englische Publikationsberichte als TXT, TEX oder PDF,
-  \item automatische Einbettung der letzten Rekonstruktionsabbildung in den Publikationsbericht.
+    \item \texttt{series\_results.xlsx} (or CSV fallback),
+    \item \texttt{series\_setup} sheet/file,
+    \item plot PNG files,
+    \item \texttt{run\_parameters.txt}.
 \end{itemize}
 
-Die Berichte enthalten jetzt zusaetzlich klinische Interpretation, Modellbefunde, Vorsichtshinweise, Follow-up-Empfehlungen sowie den Hinweis, unter welcher Radiusannahme ein bestimmter Alert besonders relevant ist.
+\section{Numerics workflow}
+Use the \texttt{Numerics} tab when stability or precision is critical.
 
-\section{Architektur im Alltag verstehen}
-Fuer den taeglichen Gebrauch muss nicht jedes interne Modul bekannt sein. Dennoch ist der aktuelle Aufbau nuetzlich zu verstehen:
+Most important controls:
 \begin{itemize}
-  \item Die wissenschaftlichen Kernfunktionen fuer den Krogh-Zylinder sind weiterhin direkt nachvollziehbar.
-  \item Sweeps und Serienplots werden ueber eigene Service-Module ausgefuehrt.
-  \item Die Diagnostik ist von der reinen GUI-Logik getrennt und dadurch leichter validierbar.
-  \item Hilfe-, Export- und Sprachfunktionen sind zentralisiert und dadurch konsistenter geworden.
+    \item ODE tolerances: \texttt{ode\_rtol}, \texttt{ode\_atol},
+    \item ODE max step: \texttt{ode\_max\_step},
+    \item tissue iteration limits/tolerances,
+    \item coupling iteration limits/tolerances,
+    \item \texttt{bootstrap\_samples} for reconstruction uncertainty.
 \end{itemize}
 
-Dieser Zustand ist besonders guenstig fuer Forschungsarbeit, da Bedienoberflaeche und Rechenkern enger dokumentiert, aber intern sauberer getrennt sind.
+Practical rule: tighten tolerances for extreme physiology, sharp sweep transitions, or publication figures.
 
-\section{Kurzfazit}
-Die Krogh-GUI ist fuer schnelle Einzelfaelle, systematische Sweeps und diagnostische Rekonstruktionen geeignet. Fuer tieferes Verstaendnis sollte bei Bedarf die ausfuehrliche Hauptdokumentation herangezogen werden.
+\section{Diagnostic and reconstruction workflow}
+\begin{enumerate}
+    \item Enter blood-gas and sensor values in \texttt{Diagnostic} tab.
+    \item Click \texttt{Run diagnostic}.
+    \item Review state probabilities, alert level, risk score, and dominant drivers.
+    \item Click \texttt{Reconstruct Krogh Cylinder} to fit perfusion/mitoP50/metabolic factor while using the currently selected base tissue radius for the primary geometry.
+    \item Review hidden hypoxic burden and radius sensitivity (30/50/100 \textmu m).
+\end{enumerate}
+
+Additional options:
+\begin{itemize}
+    \item radius mode: all variants or selected radius only,
+    \item auto-save independent 30/50/100 \textmu m reconstructions to \texttt{Diagnostic reports}.
+\end{itemize}
+
+\section{Report and export workflow}
+\subsection{Diagnostic report export}
+Button: \texttt{Save diagnostic report}.
+
+Formats: JSON or CSV.
+
+Contains: input values, diagnostic outputs, reconstruction payload fields, uncertainty and burden fields.
+
+\subsection{Publication report export}
+Button: \texttt{Save English publication report}.
+
+Formats: TXT, TEX, or PDF.
+
+PDF notes:
+\begin{itemize}
+    \item requires \texttt{pdflatex} in PATH,
+    \item if figure(s) exist, report can embed reconstruction images,
+    \item intermediate TEX is written automatically for PDF generation.
+\end{itemize}
+
+\section{Command-line validation and benchmark tools}
+\subsection{Synthetic validation}
+\begin{verbatim}
+source .venv/bin/activate
+python run_synthetic_validation.py
+\end{verbatim}
+Outputs in \texttt{Diagnostic reports/}:
+\begin{itemize}
+    \item \texttt{synthetic\_validation\_report.csv/json},
+    \item \texttt{synthetic\_validation\_trend\_checks.csv/json},
+    \item \texttt{synthetic\_validation\_robustness.csv/json}.
+\end{itemize}
+
+\subsection{Reconstruction benchmark}
+\begin{verbatim}
+source .venv/bin/activate
+python run_reconstruction_benchmark.py
+\end{verbatim}
+Outputs in \texttt{Diagnostic reports/}:
+\begin{itemize}
+    \item \texttt{reconstruction\_benchmark.csv/json},
+    \item \texttt{reconstruction\_benchmark\_comparison.csv/json}.
+\end{itemize}
+
+\section{Interpreting results safely}
+\begin{itemize}
+    \item Do not interpret alert color alone; include confidence, certainty, and dominant drivers.
+    \item For reconstruction, review fit warning, boundary hit, uncertainty width, and radius sensitivity.
+    \item Use trends and repeated measurements whenever possible.
+\end{itemize}
+
+\section{When to open the full manuals}
+Use detailed manuals when you need:
+\begin{itemize}
+    \item complete equations and solver derivations,
+    \item function-level call mapping and parameter tracing,
+    \item precise reconstruction algorithm details,
+    \item detailed output schema and reporting internals.
+\end{itemize}
 
 \end{document}

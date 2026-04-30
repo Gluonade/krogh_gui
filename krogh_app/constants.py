@@ -47,6 +47,7 @@ AXIAL_COUPLING_TOL = 1e-4
 CAPILLARY_ODE_RTOL = 1e-9
 CAPILLARY_ODE_ATOL = 1e-11
 CAPILLARY_ODE_MAX_STEP = dz
+BOOTSTRAP_SAMPLES = 80
 
 NUMERIC_SETTINGS_FIELDS = (
     ("ode_rtol", "numeric_ode_rtol", float),
@@ -56,6 +57,7 @@ NUMERIC_SETTINGS_FIELDS = (
     ("axial_diffusion_tol", "numeric_axial_diffusion_tol", float),
     ("axial_coupling_max_iter", "numeric_axial_coupling_max_iter", int),
     ("axial_coupling_tol", "numeric_axial_coupling_tol", float),
+    ("bootstrap_samples", "numeric_bootstrap_samples", int),
 )
 
 NUMERIC_SETTINGS_TYPES = {
@@ -112,6 +114,13 @@ NUMERIC_SETTING_SPECS = {
         "description_en": "Stopping tolerance of the outer capillary-tissue coupling loop. Smaller values demand closer agreement between consecutive coupled solutions.",
         "description_de": "Abbruchtoleranz der aeusseren Kapillar-Gewebe-Kopplung. Kleinere Werte verlangen eine engere Uebereinstimmung zwischen aufeinanderfolgenden gekoppelten Loesungen.",
     },
+    "bootstrap_samples": {
+        "min": 10,
+        "max": 1000,
+        "default": BOOTSTRAP_SAMPLES,
+        "description_en": "Number of measurement-perturbation bootstrap refits used for the practical uncertainty band in Krogh reconstruction. Higher values stabilize the interval estimate but increase runtime.",
+        "description_de": "Anzahl der Bootstrap-Refits fuer das praktische Unsicherheitsband der Krogh-Rekonstruktion. Hoehere Werte stabilisieren die Intervallschaetzung, erhoehen aber die Rechenzeit.",
+    },
 }
 
 # Compatibility aliases for the diagnostic MVP naming scheme
@@ -152,6 +161,7 @@ __all__ = [
     "CAPILLARY_ODE_RTOL",
     "CAPILLARY_ODE_ATOL",
     "CAPILLARY_ODE_MAX_STEP",
+    "BOOTSTRAP_SAMPLES",
     "NUMERIC_SETTINGS_FIELDS",
     "NUMERIC_SETTINGS_TYPES",
     "NUMERIC_SETTING_SPECS",

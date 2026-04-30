@@ -43,5 +43,8 @@ backup_2026-04-16_phase10_baseline/
 backup_2026-04-16_pre_refactor/
 
 # Editor and OS files
-.vscode/
+.vscode/*
+!.vscode/settings.json
+!.vscode/launch.json
+!.vscode/tasks.json
 .DS_Store

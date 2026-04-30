@@ -88,31 +88,52 @@ def _describe_feature_risks(feature_risks: Dict[str, float]) -> tuple[list[str],
 
 
 def _state_probabilities(risk_score: float, compensation_gap: float, sensor_po2: float, po2: float) -> Dict[str, float]:
-    centers = {
-        "normoxia": 0.08,
-        "mild_hypoxia": 0.28,
-        "compensated_hypoxia": 0.50,
-        "severe_hypoxia": 0.75,
-        "profound_hypoxia": 0.94,
+    # Primary state assignment follows physiologically meaningful PO2 bands,
+    # while the composite risk score and compensation gap act as secondary modifiers.
+    po2_band_centers = {
+        "normoxia": 50.0,
+        "intermediate_oxygenation": 30.0,
+        "low_oxygenation_approaching_critical": 15.0,
+        "hypoxia": 6.0,
+        "profound_hypoxia": 1.0,
     }
-    sigmas = {
-        "normoxia": 0.10,
-        "mild_hypoxia": 0.10,
-        "compensated_hypoxia": 0.11,
-        "severe_hypoxia": 0.10,
-        "profound_hypoxia": 0.06,
+    po2_band_sigmas = {
+        "normoxia": 7.5,
+        "intermediate_oxygenation": 6.0,
+        "low_oxygenation_approaching_critical": 4.0,
+        "hypoxia": 2.6,
+        "profound_hypoxia": 1.1,
     }
 
     scores: Dict[str, float] = {}
-    for state, center in centers.items():
-        sigma = sigmas[state]
-        scores[state] = -((risk_score - center) ** 2) / (2.0 * sigma ** 2)
+    for state, center in po2_band_centers.items():
+        sigma = po2_band_sigmas[state]
+        scores[state] = -((sensor_po2 - center) ** 2) / (2.0 * sigma ** 2)
 
-    scores["compensated_hypoxia"] += 0.9 * compensation_gap
-    scores["normoxia"] += 0.3 * (1.0 - _clamp(compensation_gap))
-    scores["severe_hypoxia"] += 0.4 * _clamp((35.0 - sensor_po2) / 20.0)
-    if sensor_po2 < 15.0 or po2 < 25.0:
-        scores["profound_hypoxia"] += 1.2
+    scores["normoxia"] += 0.55 * _clamp((sensor_po2 - 40.0) / 25.0)
+    scores["intermediate_oxygenation"] += 0.30 * _clamp((40.0 - sensor_po2) / 20.0)
+    scores["low_oxygenation_approaching_critical"] += 0.30 * _clamp((20.0 - sensor_po2) / 12.0)
+    scores["hypoxia"] += 0.45 * _clamp((10.0 - sensor_po2) / 8.0)
+    scores["profound_hypoxia"] += 0.70 * _clamp((2.0 - sensor_po2) / 2.0)
+
+    scores["intermediate_oxygenation"] += 0.25 * risk_score
+    scores["low_oxygenation_approaching_critical"] += 0.40 * risk_score + 0.25 * compensation_gap
+    scores["hypoxia"] += 0.55 * risk_score + 0.35 * compensation_gap
+    scores["profound_hypoxia"] += 0.80 * risk_score + 0.40 * compensation_gap
+
+    if sensor_po2 < 2.0:
+        scores["profound_hypoxia"] += 2.0
+    elif sensor_po2 < 10.0:
+        scores["hypoxia"] += 1.2
+    elif sensor_po2 < 20.0:
+        scores["low_oxygenation_approaching_critical"] += 0.8
+    elif sensor_po2 < 40.0:
+        scores["intermediate_oxygenation"] += 0.55
+
+    if po2 < 30.0:
+        scores["hypoxia"] += 0.45
+    if po2 < 20.0:
+        scores["profound_hypoxia"] += 0.55
 
     return _softmax(scores)
 
@@ -141,7 +162,7 @@ def alert_decision(
     compensation_gap = _clamp((data.po2 - data.sensor_po2) / 80.0)
 
     po2_risk = _sigmoid((55.0 - data.po2) / 12.0)
-    sensor_risk = _sigmoid((45.0 - data.sensor_po2) / 10.0)
+    sensor_risk = _sigmoid((35.0 - data.sensor_po2) / 10.0)
     acid_risk = _sigmoid((7.32 - data.pH) / 0.06)
     hypercapnia_risk = _sigmoid((data.pco2 - 48.0) / 8.0)
     anemia_risk = _sigmoid((11.5 - data.hemoglobin_g_dl) / 1.5)
@@ -150,12 +171,12 @@ def alert_decision(
         _sigmoid((35.0 - data.temperature_c) / 0.8),
         _sigmoid((data.temperature_c - 38.5) / 0.8),
     )
-    gap_risk = _sigmoid(((data.po2 - data.sensor_po2) - 20.0) / 10.0)
+    gap_risk = _sigmoid(((data.po2 - data.sensor_po2) - 45.0) / 15.0)
 
     risk_score = (
         0.22 * po2_risk
-        + 0.28 * sensor_risk
-        + 0.12 * gap_risk
+        + 0.24 * sensor_risk
+        + 0.08 * gap_risk
         + 0.12 * acid_risk
         + 0.10 * hypercapnia_risk
         + 0.08 * anemia_risk
@@ -204,10 +225,14 @@ def alert_decision(
         "confidence": confidence,
         "certainty": certainty,
         "p_normoxia": float(probabilities["normoxia"]),
-        "p_mild_hypoxia": float(probabilities["mild_hypoxia"]),
-        "p_compensated_hypoxia": float(probabilities["compensated_hypoxia"]),
-        "p_severe_hypoxia": float(probabilities["severe_hypoxia"]),
+        "p_intermediate_oxygenation": float(probabilities["intermediate_oxygenation"]),
+        "p_low_oxygenation_approaching_critical": float(probabilities["low_oxygenation_approaching_critical"]),
+        "p_hypoxia": float(probabilities["hypoxia"]),
         "p_profound_hypoxia": float(probabilities["profound_hypoxia"]),
+        # Backward-compatible aliases for existing GUI/report paths.
+        "p_mild_hypoxia": float(probabilities["intermediate_oxygenation"]),
+        "p_compensated_hypoxia": float(probabilities["low_oxygenation_approaching_critical"]),
+        "p_severe_hypoxia": float(probabilities["hypoxia"]),
         "estimated_sa_percent": float(sa_percent),
         "p50_eff": float(p50_eff),
         "feature_risks": feature_risks,

@@ -9,16 +9,16 @@ class UIControlCoordinator:
     _STATE_LABELS = {
         "en": {
             "normoxia": "normoxia",
-            "mild_hypoxia": "mild tissue hypoxia",
-            "compensated_hypoxia": "compensated tissue hypoxia",
-            "severe_hypoxia": "severe tissue hypoxia",
+            "intermediate_oxygenation": "intermediate oxygenation",
+            "low_oxygenation_approaching_critical": "low tissue oxygen approaching critical values",
+            "hypoxia": "hypoxia",
             "profound_hypoxia": "profound tissue hypoxia",
         },
         "de": {
             "normoxia": "Normoxie",
-            "mild_hypoxia": "milde Gewebehypoxie",
-            "compensated_hypoxia": "kompensierte Gewebehypoxie",
-            "severe_hypoxia": "schwere Gewebehypoxie",
+            "intermediate_oxygenation": "intermediaere Oxygenierung",
+            "low_oxygenation_approaching_critical": "niedrige Gewebeoxygenierung nahe kritischer Werte",
+            "hypoxia": "Hypoxie",
             "profound_hypoxia": "ausgepraegte Gewebehypoxie",
         },
     }
